@@ -13,6 +13,9 @@
  * Map<market_hash_name, usd> (~19K записей) и кэшируется в памяти + на диск.
  * Обновление в фоне каждые PRICES_TTL секунд — поиск не блокируется.
  *
+ * Bulk URL LIS (~640 МБ, 1.4M листингов) обрабатывается стриминг-парсером —
+ * JSON парсится по одному объекту без создания строки полного ответа.
+ *
  * Запуск:
  *   node server.js                 — поднять веб-сервер (по умолчанию :8787)
  *   node server.js serve --port N — то же, на порту N
@@ -36,7 +39,7 @@ const path  = require('path');
 const crypto= require('crypto');
 const { URL } = require('url');
 
-const VERSION = '2.0.0';
+const VERSION = '2.1.0';
 const ROOT    = __dirname;
 
 /* ============================================================================
@@ -70,9 +73,9 @@ const CFG = {
   // demo | live | auto
   defaultMode: (process.env.MODE || 'auto').toLowerCase(),
 
-  httpTimeout: int(process.env.HTTP_TIMEOUT, 15000),  // увеличено для bulk (640МБ)
+  httpTimeout: int(process.env.HTTP_TIMEOUT, 15000),
   userAgent: process.env.USER_AGENT ||
-    'Mozilla/5.0 (compatible; SpreadArbBot/2.0; +https://localhost)',
+    'Mozilla/5.0 (compatible; SpreadArbBot/2.1; +https://localhost)',
   quiet: process.env.QUIET === '1',
 };
 
@@ -162,7 +165,17 @@ function httpGet(urlStr, opts = {}) {
           return reject(new Error('too many redirects'));
         }
         const chunks = [];
-        res.on('data', (c) => chunks.push(c));
+        // Для очень больших ответов — ограничиваем размер буфера
+        let totalSize = 0;
+        const MAX_RESPONSE_SIZE = 100 * 1024 * 1024; // 100 MB для обычных запросов
+        res.on('data', (c) => {
+          totalSize += c.length;
+          if (totalSize > MAX_RESPONSE_SIZE) {
+            res.destroy(new Error(`Response too large: ${totalSize} bytes (max ${MAX_RESPONSE_SIZE})`));
+            return;
+          }
+          chunks.push(c);
+        });
         res.on('end', () => {
           let buf = Buffer.concat(chunks);
           const enc = (res.headers['content-encoding'] || '').toLowerCase();
@@ -171,19 +184,24 @@ function httpGet(urlStr, opts = {}) {
             else if (enc === 'deflate') buf = zlib.inflateSync(buf);
             else if (enc === 'br') buf = zlib.brotliDecompressSync(buf);
           } catch (_) { /* отдадим как есть */ }
-          const body = buf.toString('utf8');
-          if (code === 429) {
-            const err = new Error('HTTP 429 (rate limited)');
-            err.statusCode = 429; err.body = body;
-            return reject(err);
+          try {
+            const body = buf.toString('utf8');
+            if (code === 429) {
+              const err = new Error('HTTP 429 (rate limited)');
+              err.statusCode = 429; err.body = body;
+              return reject(err);
+            }
+            if (code < 200 || code >= 300) {
+              const err = new Error('HTTP ' + code);
+              err.statusCode = code; err.body = body;
+              return reject(err);
+            }
+            resolve({ status: code, headers: res.headers, body });
+          } catch (e) {
+            reject(new Error('Cannot convert response to string: ' + e.message));
           }
-          if (code < 200 || code >= 300) {
-            const err = new Error('HTTP ' + code);
-            err.statusCode = code; err.body = body;
-            return reject(err);
-          }
-          resolve({ status: code, headers: res.headers, body });
         });
+        res.on('error', (e) => reject(e));
       });
       req.setTimeout(timeout, () => req.destroy(new Error('timeout')));
       req.on('error', (e) => {
@@ -200,6 +218,282 @@ async function httpGetJson(urlStr, opts) {
   const r = await httpGet(urlStr, opts);
   try { return JSON.parse(r.body); }
   catch (e) { const err = new Error('bad JSON from ' + urlStr); err.body = r.body; throw err; }
+}
+
+/* ============================================================================
+ * СТРИМИНГ JSON-ПАРСЕР ДЛЯ BULK-ДАННЫХ LIS
+ *
+ * Вместо загрузки всего 640+ МБ в одну строку (превышает лимит V8 ~536 МБ),
+ * читаем ответ чанками и извлекаем объекты JSON-массива по одному.
+ * ========================================================================== */
+
+/**
+ * Скачать большой JSON-массив по URL и обработать каждый элемент через callback.
+ * Не создаёт единую строку из всего ответа — парсит incremental.
+ * @param {string} urlStr
+ * @param {object} opts - { timeout, headers, retries }
+ * @param {function} onItem - вызывается для каждого объекта: onItem(obj) => void
+ * @returns {Promise<{totalItems: number, bytesReceived: number, elapsed: number}>}
+ */
+function streamJsonArray(urlStr, opts, onItem) {
+  const { headers = {}, timeout = 120000, retries = 1 } = opts;
+  return new Promise((resolve, reject) => {
+    let attempt = 0;
+    const go = () => {
+      let u;
+      try { u = new URL(urlStr); } catch (e) { return reject(e); }
+      const mod = u.protocol === 'http:' ? http : https;
+      const req = mod.request(u, {
+        method: 'GET',
+        headers: {
+          'User-Agent': CFG.userAgent,
+          'Accept': 'application/json,text/plain,*/*',
+          'Accept-Encoding': 'gzip, deflate',
+          ...headers,
+        },
+      }, (res) => {
+        const code = res.statusCode || 0;
+        if (code >= 300 && code < 400 && res.headers.location) {
+          res.resume();
+          urlStr = new URL(res.headers.location, u).toString();
+          if (attempt++ < 5) return go();
+          return reject(new Error('too many redirects'));
+        }
+        if (code < 200 || code >= 300) {
+          let body = '';
+          res.on('data', (c) => { body += c.toString('utf8'); });
+          res.on('end', () => {
+            const err = new Error('HTTP ' + code);
+            err.statusCode = code; err.body = body;
+            reject(err);
+          });
+          return;
+        }
+
+        // Определяем кодировку и при необходимости распаковываем
+        const enc = (res.headers['content-encoding'] || '').toLowerCase();
+        let stream = res;
+        if (enc === 'gzip') stream = res.pipe(zlib.createGunzip());
+        else if (enc === 'deflate') stream = res.pipe(zlib.createInflate());
+        else if (enc === 'br') stream = res.pipe(zlib.createBrotliDecompress());
+
+        const t0 = Date.now();
+        let totalItems = 0;
+        let bytesReceived = 0;
+
+        // Состояние парсера: находим полные JSON-объекты внутри массива
+        // Мы ожидаем формат: [{"key":"val",...},{"key":"val",...},...]
+        const parser = new StreamingJsonArrayParser((item) => {
+          totalItems++;
+          onItem(item);
+        });
+
+        stream.on('data', (chunk) => {
+          bytesReceived += chunk.length;
+          // Конвертируем чанк в строку (чанки маленькие, ~64KB — проблем нет)
+          const text = chunk.toString('utf8');
+          parser.feed(text);
+        });
+
+        stream.on('end', () => {
+          parser.flush(); // обработать остатки
+          const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+          resolve({ totalItems, bytesReceived, elapsed: parseFloat(elapsed) });
+        });
+
+        stream.on('error', (e) => {
+          reject(new Error('Stream error: ' + e.message));
+        });
+
+        req.setTimeout(timeout, () => {
+          stream.destroy();
+          req.destroy(new Error('timeout'));
+        });
+      });
+      req.on('error', (e) => {
+        if (attempt++ < retries) return setTimeout(go, 1000 * attempt);
+        reject(e);
+      });
+      req.end();
+    };
+    go();
+  });
+}
+
+/**
+ * Простой стриминг-парсер JSON-массива.
+ * Поддерживает извлечение объектов из массива: [{...}, {...}, ...]
+ * Также поддерживает обёртки: {"items":[...], ...} и {"data":[...], ...}
+ */
+class StreamingJsonArrayParser {
+  constructor(onItem) {
+    this.onItem = onItem;
+    this.buffer = '';
+    this.depth = 0;
+    this.inArray = false;
+    this.inObject = false;
+    this.objectStart = -1;
+    this.foundArray = false;
+    this.wrapperParsed = false;
+    this.wrapperDepth = -1;
+    this.arrayDepth = -1;
+  }
+
+  feed(text) {
+    this.buffer += text;
+    this._parse();
+  }
+
+  flush() {
+    if (this.buffer.trim()) {
+      this._parse();
+    }
+  }
+
+  _parse() {
+    while (this.buffer.length > 0) {
+      // Пропускаем пробелы перед началом
+      const trimmed = this.buffer.trimStart();
+      if (!trimmed) break;
+      this.buffer = trimmed;
+
+      // Ищем начало массива (если ещё не нашли)
+      if (!this.foundArray) {
+        const idx = this.buffer.indexOf('[');
+        if (idx === -1) {
+          // Проверяем, есть ли обёртка-объект
+          if (this.buffer[0] === '{') {
+            // Парсим начало обёртки — ищем имя ключа и [
+            const colonIdx = this.buffer.indexOf(':');
+            if (colonIdx === -1) break;
+            const key = this.buffer.slice(1, colonIdx).trim().replace(/"/g, '');
+            // Ищем [ после :
+            const arrIdx = this.buffer.indexOf('[', colonIdx);
+            if (arrIdx === -1) break;
+            this.buffer = this.buffer.slice(arrIdx + 1);
+            this.foundArray = true;
+            this.inArray = true;
+            continue;
+          }
+          break; // Ждём больше данных
+        }
+        this.buffer = this.buffer.slice(idx + 1);
+        this.foundArray = true;
+        this.inArray = true;
+        continue;
+      }
+
+      if (!this.inArray) break;
+
+      // Пропускаем пробелы и запятые между элементами
+      if (this.buffer[0] === ' ' || this.buffer[0] === '\n' || this.buffer[0] === '\r' ||
+          this.buffer[0] === '\t' || this.buffer[0] === ',') {
+        this.buffer = this.buffer.slice(1);
+        continue;
+      }
+
+      // Конец массива
+      if (this.buffer[0] === ']') {
+        this.inArray = false;
+        this.buffer = '';
+        break;
+      }
+
+      // Начало объекта — извлекаем его целиком
+      if (this.buffer[0] === '{') {
+        const obj = this._extractObject();
+        if (obj === null) break; // Нужно больше данных
+        try {
+          const parsed = JSON.parse(obj);
+          this.onItem(parsed);
+        } catch (e) {
+          // Пропускаем невалидные объекты
+        }
+        continue;
+      }
+
+      // Пропускаем другие токены (числа, строки вне объектов)
+      if (this.buffer[0] === '"' || this.buffer[0] === '-' || (this.buffer[0] >= '0' && this.buffer[0] <= '9') || this.buffer[0] === 'n' || this.buffer[0] === 't' || this.buffer[0] === 'f') {
+        const end = this._skipValue();
+        if (end === -1) break;
+        this.buffer = this.buffer.slice(end);
+        continue;
+      }
+
+      // Неизвестный символ — пропускаем
+      this.buffer = this.buffer.slice(1);
+    }
+  }
+
+  /**
+   * Извлечь один JSON-объект из буфера, отслеживая вложенность скобок и строк.
+   * @returns {string|null} JSON-строка объекта или null если данных недостаточно
+   */
+  _extractObject() {
+    let depth = 0;
+    let i = 0;
+    let inString = false;
+    let escape = false;
+
+    for (; i < this.buffer.length; i++) {
+      const ch = this.buffer[i];
+
+      if (escape) {
+        escape = false;
+        continue;
+      }
+
+      if (ch === '\\' && inString) {
+        escape = true;
+        continue;
+      }
+
+      if (ch === '"' && !escape) {
+        inString = !inString;
+        continue;
+      }
+
+      if (inString) continue;
+
+      if (ch === '{') depth++;
+      if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          const obj = this.buffer.slice(0, i + 1);
+          this.buffer = this.buffer.slice(i + 1);
+          return obj;
+        }
+      }
+    }
+
+    // Недостаточно данных
+    return null;
+  }
+
+  /**
+   * Пропустить одно JSON-значение (строка, число, null, true, false).
+   * @returns {number} количество символов пропущенных, или -1 если данных мало
+   */
+  _skipValue() {
+    const ch = this.buffer[0];
+    if (ch === '"') {
+      let i = 1;
+      while (i < this.buffer.length) {
+        if (this.buffer[i] === '\\') { i += 2; continue; }
+        if (this.buffer[i] === '"') return i + 1;
+        i++;
+      }
+      return -1;
+    }
+    if (ch === 'n') return this.buffer.startsWith('null') ? 4 : -1;
+    if (ch === 't') return this.buffer.startsWith('true') ? 4 : -1;
+    if (ch === 'f') return this.buffer.startsWith('false') ? 5 : -1;
+    // Число
+    let i = 0;
+    if (this.buffer[i] === '-') i++;
+    while (i < this.buffer.length && ((this.buffer[i] >= '0' && this.buffer[i] <= '9') || this.buffer[i] === '.' || this.buffer[i] === 'e' || this.buffer[i] === 'E' || this.buffer[i] === '+' || this.buffer[i] === '-')) i++;
+    return i > 0 ? i : -1;
+  }
 }
 
 /* ============================================================================
@@ -378,7 +672,8 @@ async function loadPriceFileOrUrl(file, url, headers) {
   if (url) {
     info(`LIS: загрузка из ${hostOf(url)} …`);
     const t0 = Date.now();
-    const raw = await httpGetJson(url, { headers, retries: 2, timeout: 120000 }); // 2 мин для bulk
+    // Для обычных JSON-ответов (не bulk) используем стандартный httpGet
+    const raw = await httpGetJson(url, { headers, retries: 2, timeout: 30000 });
     const map = parsePriceList(raw);
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
     info(`LIS: ${map.size.toLocaleString()} уникальных скинов за ${elapsed}с`);
@@ -392,14 +687,39 @@ async function loadPriceFileOrUrl(file, url, headers) {
  *
  * Оптимизация: прайс загружается один раз при старте и периодически
  * обновляется в фоне. Кэш — память + диск.
+ *
+ * Для bulk-URL (~640 МБ) используется стриминг-парсер — JSON парсится
+ * по одному объекту без создания полной строки ответа в памяти.
  * ========================================================================== */
 let lisState = { map: new Map(), source: 'none', loading: false, lastRefresh: 0, error: null };
+
+/**
+ * Загрузить bulk-прайс через стриминг. Извлекает объекты из массива по одному,
+ * избегая ограничения V8 на длину строки (~536 МБ).
+ */
+async function loadBulkStreaming(url, headers) {
+  const map = new Map();
+  info(`LIS: стриминг-загрузка bulk с ${hostOf(url)} …`);
+
+  const result = await streamJsonArray(url, { headers, timeout: 180000 }, (item) => {
+    if (!item || typeof item !== 'object') return;
+    const name = normName(pickField(item, NAME_FIELDS));
+    const price = parseMoney(pickField(item, PRICE_FIELDS));
+    if (name && price != null && price > 0) keepMax(map, name, price);
+  });
+
+  const mb = (result.bytesReceived / (1024 * 1024)).toFixed(1);
+  info(`LIS: bulk загружен — ${result.bytesReceived.toLocaleString()} байт (${mb} МБ), ` +
+    `${result.totalItems.toLocaleString()} записей обработано за ${result.elapsed}с, ` +
+    `${map.size.toLocaleString()} уникальных скинов`);
+  return { map, source: hostOf(url) };
+}
 
 async function refreshLisPrices() {
   if (lisState.loading) return lisState;
   lisState.loading = true;
   try {
-    // Приоритет: локальный файл → API по токену → bulk-URL
+    // Приоритет: локальный файл → API по токену → bulk-URL (стриминг)
     let res;
     if (CFG.lisPricesFile) {
       res = await loadPriceFileOrUrl(CFG.lisPricesFile, '');
@@ -407,7 +727,8 @@ async function refreshLisPrices() {
       const url = CFG.lisApiBase.replace(/\/$/, '') + '/market/prices';
       res = await loadPriceFileOrUrl('', url, { Authorization: 'Bearer ' + CFG.lisApiToken });
     } else {
-      res = await loadPriceFileOrUrl('', CFG.lisBulkUrl);
+      // Bulk URL — используем стриминг-парсер (без ограничения на размер строки)
+      res = await loadBulkStreaming(CFG.lisBulkUrl);
     }
     if (res.map.size) {
       // Кэшируем как массив пар для JSON-сериализации
@@ -722,7 +1043,7 @@ function startServer(port) {
     console.log(`  СПРЕД v${VERSION} — сервер запущен`);
     console.log(`  → http://localhost:${port}`);
     console.log(`  Режим: ${CFG.defaultMode}`);
-    const lisSrc = CFG.lisPricesFile ? 'файл' : CFG.lisApiToken ? 'API-токен' : 'bulk-URL';
+    const lisSrc = CFG.lisPricesFile ? 'файл' : CFG.lisApiToken ? 'API-токен' : 'bulk-URL (стриминг)';
     console.log(`  LIS: ${lisSrc} · Steam: priceoverview · FX: ${hostOf(CFG.fxUrl)}`);
     console.log('');
   });
@@ -840,7 +1161,7 @@ function setupProcessHandlers() {
         info('сервер остановлен');
         process.exit(0);
       });
-      // Ждём最多 5 сек, потом убиваем
+      // Ждём максимум 5 сек, потом убиваем
       setTimeout(() => {
         warn('graceful shutdown timeout — принудительное завершение');
         process.exit(1);
@@ -857,7 +1178,6 @@ function setupProcessHandlers() {
   });
   process.on('uncaughtException', (err) => {
     error('Uncaught Exception:', err.message, err.stack);
-    // В продакшене можно решить — убивать или продолжать
     // Для арбитражного скрипта лучше упасть и перезапуститься
     process.exit(1);
   });
@@ -893,7 +1213,7 @@ async function main() {
 
   // 3) Загрузить/обновить LIS прайсы в фоне
   if (lisState.map.size === 0) {
-    info('LIS: первая загрузка прайсов (может занять время для bulk) …');
+    info('LIS: первая загрузка прайсов (bulk через стриминг) …');
   } else {
     info('LIS: обновление прайсов в фоне …');
   }
