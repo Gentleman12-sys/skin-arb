@@ -1,41 +1,43 @@
 #!/usr/bin/env node
 /* ============================================================================
- * СПРЕД — арбитраж скинов CS2 · Steam ↔ LIS-Skins / CS.money
+ * СПРЕД — арбитраж скинов CS2 · Steam ↔ LIS-Skins
  * ----------------------------------------------------------------------------
  * Бэкенд на чистом Node.js (только встроенные модули, без npm install).
  *
- * Зачем нужен бэкенд: эндпоинты Steam (priceoverview) и LIS/CS.money не отдают
+ * Зачем нужен бэкенд: эндпоинты Steam (priceoverview) и LIS-Skins не отдают
  * данные напрямую в браузер — мешает CORS, а у Steam ещё и жёсткий лимит
  * запросов. Этот сервер выступает прокси + кэшем + считалкой спреда, а
- * фронтенд (spread-arbitrage.html) ходит к нему за реальными ценами. Если
- * сервер не запущен, фронт работает автономно на демо-данных.
+ * фронтенд (spread-arbitrage.html) ходит к нему за реальными ценами.
+ *
+ * Оптимизация: LIS-прайс выгружается ОДИН раз при старте, агрегируется до
+ * Map<market_hash_name, usd> (~19K записей) и кэшируется в памяти + на диск.
+ * Обновление в фоне каждые PRICES_TTL секунд — поиск не блокируется.
  *
  * Запуск:
  *   node server.js                 — поднять веб-сервер (по умолчанию :8787)
- *   node server.js serve --port N  — то же, на порту N
- *   node server.js search 8000 [--currency RUB] [--corridor 5]
- *                                  [--exchange best|lis|csmoney] [--net]
+ *   node server.js serve --port N — то же, на порту N
+ *   node server.js search 8000 [--currency RUB] [--corridor 5] [--net]
  *                                  [--mode auto|live|demo]   — поиск в консоли
- *   node server.js fx              — показать курсы валют
- *   node server.js steam "<name>"  — цена одного скина в Steam
- *   node server.js diag [--exchange lis] — формат прайс-листа источника
+ *   node server.js fx             — показать курсы валют
+ *   node server.js steam "<name>" — цена одного скина в Steam
+ *   node server.js diag           — формат прайс-листа LIS
  *
- * Все цены внутри считаются в USD (источники отдают USD), пользователю
+ * Все цены внутри считаются в USD (LIS отдаёт USD), пользователю
  * показываются в выбранной валюте по курсу USD→валюта.
  * ========================================================================== */
 
 'use strict';
 
-const http = require('http');
+const http  = require('http');
 const https = require('https');
-const zlib = require('zlib');
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
+const zlib  = require('zlib');
+const fs    = require('fs');
+const path  = require('path');
+const crypto= require('crypto');
 const { URL } = require('url');
 
-const VERSION = '1.0.0';
-const ROOT = __dirname;
+const VERSION = '2.0.0';
+const ROOT    = __dirname;
 
 /* ============================================================================
  * КОНФИГ (всё переопределяется переменными окружения)
@@ -50,39 +52,34 @@ const CFG = {
 
   // LIS-Skins. Приоритет: локальный файл → API по токену → bulk-JSON по ссылке.
   lisPricesFile: process.env.LIS_PRICES_FILE || '',
-  lisApiBase: process.env.LIS_API_BASE || 'https://api.lis-skins.com/v1',
-  lisApiToken: process.env.LIS_API_TOKEN || '',
-  lisBulkUrl: process.env.LIS_BULK_URL || 'https://lis-skins.com/market_export_json/api_csgo_full.json',
+  lisApiBase:    process.env.LIS_API_BASE || 'https://api.lis-skins.com/v1',
+  lisApiToken:   process.env.LIS_API_TOKEN || '',
+  lisBulkUrl:    process.env.LIS_BULK_URL || 'https://lis-skins.com/market_export_json/api_csgo_full.json',
 
-  // CS.money. Локальный файл или JSON-эндпоинт прайса.
-  csmoneyPricesFile: process.env.CSMONEY_PRICES_FILE || '',
-  csmoneyUrl: process.env.CSMONEY_URL || '',
-
-  pricesTtl: int(process.env.PRICES_TTL, 30 * 60) * 1000,
+  pricesTtl: int(process.env.PRICES_TTL, 30 * 60) * 1000,  // 30 мин
 
   // Steam priceoverview: appid 730 (CS2), currency=1 (USD).
-  steamTtl: int(process.env.STEAM_TTL, 6 * 3600) * 1000,
-  steamDelayMs: int(process.env.STEAM_DELAY_MS, 3500),   // ~17 запросов/мин
-  steamMaxLookups: int(process.env.STEAM_MAX_LOOKUPS, 40), // потолок «свежих» запросов на один поиск
-  steamRetries: int(process.env.STEAM_RETRIES, 3),
+  steamTtl:         int(process.env.STEAM_TTL, 6 * 3600) * 1000,
+  steamDelayMs:     int(process.env.STEAM_DELAY_MS, 3500),     // ~17 запросов/мин
+  steamMaxLookups:  int(process.env.STEAM_MAX_LOOKUPS, 40),   // потолок «свежих» запросов
+  steamRetries:     int(process.env.STEAM_RETRIES, 3),
 
   // Комиссия Steam при продаже (для режима «чистыми»).
   steamFee: float(process.env.STEAM_FEE, 0.15),
 
-  // demo | live | auto — режим по умолчанию для API/CLI.
+  // demo | live | auto
   defaultMode: (process.env.MODE || 'auto').toLowerCase(),
 
-  httpTimeout: int(process.env.HTTP_TIMEOUT, 12000),
+  httpTimeout: int(process.env.HTTP_TIMEOUT, 15000),  // увеличено для bulk (640МБ)
   userAgent: process.env.USER_AGENT ||
-    'Mozilla/5.0 (compatible; SpreadArbBot/1.0; +https://localhost)',
+    'Mozilla/5.0 (compatible; SpreadArbBot/2.0; +https://localhost)',
   quiet: process.env.QUIET === '1',
 };
 
-// Шаблоны ссылок на скин на каждой площадке.
+// Шаблоны ссылок
 const LINKS = {
   steam: (mhn) => `https://steamcommunity.com/market/listings/730/${encodeURIComponent(mhn)}`,
-  lis: (base) => `https://lis-skins.com/market/csgo/?query=${encodeURIComponent(base)}`,
-  csmoney: (base) => `https://cs.money/market/buy/?search=${encodeURIComponent(base)}`,
+  lis:   (base) => `https://lis-skins.com/market/csgo/?query=${encodeURIComponent(base)}`,
 };
 
 const WEARS = ['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn', 'Battle-Scarred'];
@@ -90,26 +87,39 @@ const WEARS = ['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn', 'Batt
 /* ============================================================================
  * МЕЛКИЕ УТИЛИТЫ
  * ========================================================================== */
-function int(v, d) { const n = parseInt(v, 10); return Number.isFinite(n) ? n : d; }
-function float(v, d) { const n = parseFloat(v); return Number.isFinite(n) ? n : d; }
-function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
-function log(...a) { if (!CFG.quiet) console.error(...a); }
+function int(v, d)  { const n = parseInt(v, 10);  return Number.isFinite(n) ? n : d; }
+function float(v, d){ const n = parseFloat(v);     return Number.isFinite(n) ? n : d; }
+function sleep(ms)  { return new Promise((r) => setTimeout(r, ms)); }
+
+// Структурированное логирование с таймстемпом
+const logLevel = process.env.LOG_LEVEL === 'debug' ? 1 : 0;
+function log(level, ...a) {
+  if (level === 'debug' && !logLevel) return;
+  if (CFG.quiet && level !== 'error' && level !== 'warn') return;
+  const ts = new Date().toISOString();
+  const prefix = level === 'error' ? 'ERR' : level === 'warn' ? 'WRN' : level === 'debug' ? 'DBG' : 'INF';
+  console.error(`${ts} [${prefix}]`, ...a);
+}
+function info(...a)  { log('info', ...a); }
+function warn(...a)  { log('warn', ...a); }
+function error(...a) { log('error', ...a); }
+function debug(...a) { log('debug', ...a); }
 
 // Нормализация имени скина: убрать NBSP и лишние пробелы, сохранить ★ и ™.
 function normName(s) {
   return String(s == null ? '' : s)
-    .replace(/ /g, ' ')
+    .replace(/\u00A0/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
-// Разбор денежной строки в число: "$1,234.56", "1 234,56", "82.5", 82.5 → number|null
+// Разбор денежной строки в число
 function parseMoney(v) {
   if (typeof v === 'number') return Number.isFinite(v) ? v : null;
   if (v == null) return null;
   let s = String(v).replace(/[^\d.,-]/g, '');
   if (s.indexOf(',') > -1 && s.indexOf('.') > -1) {
-    s = s.replace(/,/g, '');                       // запятая = разделитель тысяч
+    s = s.replace(/,/g, '');
   } else if (s.indexOf(',') > -1) {
     s = /,\d{1,2}$/.test(s) ? s.replace(',', '.') : s.replace(/,/g, '');
   }
@@ -117,7 +127,7 @@ function parseMoney(v) {
   return Number.isFinite(n) ? n : null;
 }
 
-// Выделить износ из market_hash_name: "AK-47 | Asiimov (Field-Tested)" → {base, wear}
+// Выделить износ из market_hash_name
 function splitWear(mhn) {
   const m = String(mhn).match(/^(.*\S)\s+\(([^()]+)\)\s*$/);
   if (m && WEARS.includes(m[2])) return { base: m[1], wear: m[2] };
@@ -145,7 +155,6 @@ function httpGet(urlStr, opts = {}) {
         },
       }, (res) => {
         const code = res.statusCode || 0;
-        // редиректы
         if (code >= 300 && code < 400 && res.headers.location) {
           res.resume();
           urlStr = new URL(res.headers.location, u).toString();
@@ -194,11 +203,11 @@ async function httpGetJson(urlStr, opts) {
 }
 
 /* ============================================================================
- * ДИСКОВЫЙ КЭШ (+ память). Файлы JSON под CACHE_DIR.
+ * ДИСКОВЫЙ КЭШ (+ память)
  * ========================================================================== */
 const memCache = new Map();
-function cacheKey(k) { return crypto.createHash('sha1').update(k).digest('hex').slice(0, 24); }
-function cacheFile(k) { return path.join(CFG.cacheDir, cacheKey(k) + '.json'); }
+function cacheKey(k)     { return crypto.createHash('sha1').update(k).digest('hex').slice(0, 24); }
+function cacheFile(k)   { return path.join(CFG.cacheDir, cacheKey(k) + '.json'); }
 
 function cacheGet(k, ttl) {
   const m = memCache.get(k);
@@ -219,7 +228,7 @@ function cacheSet(k, val) {
   try {
     fs.mkdirSync(CFG.cacheDir, { recursive: true });
     fs.writeFileSync(cacheFile(k), JSON.stringify(obj));
-  } catch (e) { log('cache write failed:', e.message); }
+  } catch (e) { warn('cache write failed:', e.message); }
 }
 
 /* ============================================================================
@@ -228,16 +237,16 @@ function cacheSet(k, val) {
 const BUILTIN_DEMO = {
   fx_fallback: { USD: 1, RUB: 92.0, EUR: 0.92, KZT: 475, UAH: 41 },
   skins: [
-    { name: 'AK-47 | Asiimov', wear: 'Field-Tested', lis: 85.5, csmoney: 83.9, steam: 66.2 },
-    { name: 'AK-47 | Redline', wear: 'Field-Tested', lis: 86.0, csmoney: 87.2, steam: 71.4 },
-    { name: 'AWP | Asiimov', wear: 'Well-Worn', lis: 90.5, csmoney: 89.1, steam: 79.2 },
-    { name: '★ Karambit | Doppler', wear: 'Factory New', lis: 290.1, csmoney: 305.0, steam: null, why: 'символ ★' },
+    { name: 'AK-47 | Asiimov',   wear: 'Field-Tested', lis: 85.5,  steam: 66.2 },
+    { name: 'AK-47 | Redline',   wear: 'Field-Tested', lis: 86.0,  steam: 71.4 },
+    { name: 'AWP | Asiimov',     wear: 'Well-Worn',     lis: 90.5,  steam: 79.2 },
+    { name: '★ Karambit | Doppler', wear: 'Factory New', lis: 290.1, steam: null, why: 'символ ★' },
   ],
 };
 let DEMO = BUILTIN_DEMO;
 try {
   DEMO = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'demo_prices.json'), 'utf8'));
-} catch (_) { log('demo_prices.json не найден — использую встроенный мини-набор'); }
+} catch (_) { info('demo_prices.json не найден — использую встроенный мини-набор'); }
 
 const FALLBACK_FX = Object.assign({ USD: 1, RUB: 92, EUR: 0.92, KZT: 475, UAH: 41 }, DEMO.fx_fallback || {});
 
@@ -255,7 +264,7 @@ async function getFx() {
       cacheSet('fx:USD', out);
       return out;
     }
-  } catch (e) { log('fx provider failed:', e.message); }
+  } catch (e) { warn('fx provider failed:', e.message); }
   return { rates: FALLBACK_FX, source: 'fallback', ts: Date.now() };
 }
 function resolveRate(fx, currency) {
@@ -281,7 +290,6 @@ function enqueueSteam(fn) {
   return run;
 }
 
-// Возвращает { price:number|null, source, error? }. null = цены в Steam нет.
 async function getSteamPrice(mhn) {
   const key = 'steam:' + mhn;
   const cached = cacheGet(key, CFG.steamTtl);
@@ -295,7 +303,7 @@ async function getSteamPrice(mhn) {
           + '&market_hash_name=' + encodeURIComponent(mhn);
         const data = await httpGetJson(url, { retries: 0, timeout: CFG.httpTimeout });
         if (!data || data.success !== true) return { price: null };
-        const raw = data.lowest_price || data.median_price || null; // минимальная, иначе медианная
+        const raw = data.lowest_price || data.median_price || null;
         return { price: parseMoney(raw) };
       });
       const result = { price: out.price, source: 'steam' };
@@ -304,7 +312,7 @@ async function getSteamPrice(mhn) {
     } catch (e) {
       if (e.statusCode === 429 && attempt < CFG.steamRetries) {
         delay = Math.min(delay * 2, 30000);
-        log(`steam 429 «${mhn}» — пауза ${delay}мс`);
+        warn(`steam 429 «${mhn}» — пауза ${delay}мс`);
         await sleep(delay);
         continue;
       }
@@ -316,10 +324,10 @@ async function getSteamPrice(mhn) {
 
 /* ============================================================================
  * ПАРСЕР ПРАЙС-ЛИСТОВ (универсальный) → Map<market_hash_name, usd>
- * Понимает: массив объектов, объект-словарь {name: price|{...}}, обёртки
- * {items:[...]}/{data:[...]}, цены строкой или числом.
+ * Понимает: массив объектов, словарь {name: price}, обёртки items/data/prices,
+ * а также Lis-Skins bulk-формат (items[] с id/name/price — агрегирует дубликаты).
  * ========================================================================== */
-const NAME_FIELDS = ['market_hash_name', 'market_name', 'hash_name', 'name', 'fullName', 'title'];
+const NAME_FIELDS  = ['market_hash_name', 'market_name', 'hash_name', 'name', 'fullName', 'title'];
 const PRICE_FIELDS = ['price', 'payout', 'suggested_price', 'lowest_price', 'value', 'usd', 'priceUsd', 'min_price'];
 
 function pickField(obj, fields) {
@@ -331,10 +339,10 @@ function parsePriceList(raw) {
   const map = new Map();
   let data = raw;
   if (data && !Array.isArray(data) && typeof data === 'object') {
-    if (Array.isArray(data.items)) data = data.items;
-    else if (Array.isArray(data.data)) data = data.data;
-    else if (Array.isArray(data.prices)) data = data.prices;
-    else if (Array.isArray(data.result)) data = data.result;
+    if (Array.isArray(data.items))   data = data.items;
+    else if (Array.isArray(data.data))    data = data.data;
+    else if (Array.isArray(data.prices))  data = data.prices;
+    else if (Array.isArray(data.result))  data = data.result;
   }
   if (Array.isArray(data)) {
     for (const it of data) {
@@ -361,23 +369,37 @@ function keepMax(map, name, price) {
 
 async function loadPriceFileOrUrl(file, url, headers) {
   if (file) {
+    info(`LIS: загрузка из файла ${path.basename(file)} …`);
     const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
-    return { map: parsePriceList(raw), source: 'file:' + path.basename(file) };
+    const map = parsePriceList(raw);
+    info(`LIS: ${map.size.toLocaleString()} уникальных скинов из файла`);
+    return { map, source: 'file:' + path.basename(file) };
   }
   if (url) {
-    const raw = await httpGetJson(url, { headers, retries: 2 });
-    return { map: parsePriceList(raw), source: hostOf(url) };
+    info(`LIS: загрузка из ${hostOf(url)} …`);
+    const t0 = Date.now();
+    const raw = await httpGetJson(url, { headers, retries: 2, timeout: 120000 }); // 2 мин для bulk
+    const map = parsePriceList(raw);
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+    info(`LIS: ${map.size.toLocaleString()} уникальных скинов за ${elapsed}с`);
+    return { map, source: hostOf(url) };
   }
   return { map: new Map(), source: 'none' };
 }
 
 /* ============================================================================
- * АДАПТЕРЫ ПЛОЩАДОК (выплата за скин, USD) → Map<mhn, usd>
+ * АДАПТЕР LIS-SKINS → Map<mhn, usd>  (единственная площадка)
+ *
+ * Оптимизация: прайс загружается один раз при старте и периодически
+ * обновляется в фоне. Кэш — память + диск.
  * ========================================================================== */
-async function getLisPrices() {
-  const cached = cacheGet('prices:lis', CFG.pricesTtl);
-  if (cached) return { map: new Map(cached.entries), source: cached.source };
+let lisState = { map: new Map(), source: 'none', loading: false, lastRefresh: 0, error: null };
+
+async function refreshLisPrices() {
+  if (lisState.loading) return lisState;
+  lisState.loading = true;
   try {
+    // Приоритет: локальный файл → API по токену → bulk-URL
     let res;
     if (CFG.lisPricesFile) {
       res = await loadPriceFileOrUrl(CFG.lisPricesFile, '');
@@ -387,30 +409,50 @@ async function getLisPrices() {
     } else {
       res = await loadPriceFileOrUrl('', CFG.lisBulkUrl);
     }
-    if (res.map.size) cacheSet('prices:lis', { entries: [...res.map], source: res.source });
-    return res;
+    if (res.map.size) {
+      // Кэшируем как массив пар для JSON-сериализации
+      cacheSet('prices:lis', { entries: [...res.map], source: res.source });
+      lisState.map    = res.map;
+      lisState.source = res.source;
+      lisState.error  = null;
+    }
+    lisState.lastRefresh = Date.now();
+    return lisState;
   } catch (e) {
-    log('LIS prices failed:', e.message);
-    return { map: new Map(), source: 'error', error: e.message };
+    error('LIS prices failed:', e.message);
+    lisState.error = e.message;
+    return lisState;
+  } finally {
+    lisState.loading = false;
   }
 }
 
-async function getCsMoneyPrices() {
-  const cached = cacheGet('prices:csmoney', CFG.pricesTtl);
-  if (cached) return { map: new Map(cached.entries), source: cached.source };
-  try {
-    const res = await loadPriceFileOrUrl(CFG.csmoneyPricesFile, CFG.csmoneyUrl);
-    if (res.map.size) cacheSet('prices:csmoney', { entries: [...res.map], source: res.source });
-    return res;
-  } catch (e) {
-    log('CS.money prices failed:', e.message);
-    return { map: new Map(), source: 'error', error: e.message };
+// Попробовать восстановить из кэша при старте (мгновенно)
+function initLisFromCache() {
+  const cached = cacheGet('prices:lis', CFG.pricesTtl * 2); // двойной TTL для старта
+  if (cached) {
+    lisState.map    = new Map(cached.entries);
+    lisState.source = cached.source;
+    info(`LIS: восстановлено из кэша — ${lisState.map.size.toLocaleString()} скинов (${cached.source})`);
+    return true;
   }
+  return false;
+}
+
+// Фоновое обновление прайсов
+let bgRefreshTimer = null;
+function startBgRefresh() {
+  if (bgRefreshTimer) clearInterval(bgRefreshTimer);
+  bgRefreshTimer = setInterval(async () => {
+    debug('LIS: фоновое обновление прайсов …');
+    await refreshLisPrices();
+  }, CFG.pricesTtl);
+  // Не даем таймеру удерживать процесс
+  if (bgRefreshTimer.unref) bgRefreshTimer.unref();
 }
 
 /* ============================================================================
- * СБОРКА ТАБЛИЦЫ РЫНКА (для выбранных площадок и режима)
- * Возвращает { rows:[{name,wear,mhn,lis?,csmoney?,steam?}], sources, mode }
+ * СБОРКА ТАБЛИЦЫ РЫНКА
  * ========================================================================== */
 function demoTable() {
   return (DEMO.skins || []).map((s) => {
@@ -420,110 +462,105 @@ function demoTable() {
     return {
       name: base, wear,
       mhn: wear && !/\(/.test(name) ? `${base} (${wear})` : name,
-      lis: parseMoney(s.lis), csmoney: parseMoney(s.csmoney),
+      lis: parseMoney(s.lis),
       steam: s.steam == null ? null : parseMoney(s.steam),
       why: s.why,
     };
   });
 }
 
-async function liveTable(exchange) {
-  const wantLis = exchange !== 'csmoney';
-  const wantCsm = exchange !== 'lis';
-  const [lis, csm] = await Promise.all([
-    wantLis ? getLisPrices() : Promise.resolve({ map: new Map(), source: 'skipped' }),
-    wantCsm ? getCsMoneyPrices() : Promise.resolve({ map: new Map(), source: 'skipped' }),
-  ]);
-  const names = new Set([...lis.map.keys(), ...csm.map.keys()]);
+async function liveTable() {
+  const map = lisState.map;
   const rows = [];
-  for (const mhn of names) {
+  for (const [mhn, price] of map) {
     const { base, wear } = splitWear(mhn);
     rows.push({
       name: base, wear, mhn,
-      lis: lis.map.get(mhn), csmoney: csm.map.get(mhn),
-      steam: undefined, // подтянем из Steam точечно
+      lis: price,
+      steam: undefined, // подтянем точечно из Steam
     });
   }
-  return { rows, sources: { lis: lis.source, csmoney: csm.source }, lisErr: lis.error, csmErr: csm.error };
+  return { rows, source: lisState.source, error: lisState.error };
 }
 
 /* ============================================================================
  * ДВИЖОК АРБИТРАЖА
  * ========================================================================== */
-function chosenPayout(row, exchange) {
-  const lis = Number.isFinite(row.lis) ? row.lis : null;
-  const csm = Number.isFinite(row.csmoney) ? row.csmoney : null;
-  if (exchange === 'lis') return lis == null ? null : { payout: lis, ex: 'lis' };
-  if (exchange === 'csmoney') return csm == null ? null : { payout: csm, ex: 'csmoney' };
-  // best: максимальная выплата
-  if (lis == null && csm == null) return null;
-  if (csm == null || (lis != null && lis >= csm)) return { payout: lis, ex: 'lis' };
-  return { payout: csm, ex: 'csmoney' };
-}
-
 async function runSearch(params) {
-  const amount = float(params.amount, 0);
-  const currency = String(params.currency || 'RUB').toUpperCase();
+  const amount      = float(params.amount, 0);
+  const currency    = String(params.currency || 'RUB').toUpperCase();
   const corridorPct = Math.max(0.5, float(params.corridor, 5));
-  const exchange = ['lis', 'csmoney', 'best'].includes(params.exchange) ? params.exchange : 'best';
-  const net = params.net === true || params.net === '1' || params.net === 'true';
-  let mode = ['auto', 'live', 'demo'].includes(params.mode) ? params.mode : CFG.defaultMode;
+  const net         = params.net === true || params.net === '1' || params.net === 'true';
+  let mode          = ['auto', 'live', 'demo'].includes(params.mode) ? params.mode : CFG.defaultMode;
 
-  const fx = await getFx();
+  const fx   = await getFx();
   const rate = resolveRate(fx, currency);
   const targetUsd = amount > 0 ? amount / rate : 0;
   const corr = corridorPct / 100;
-  const lo = targetUsd * (1 - corr);
-  const hi = targetUsd * (1 + corr);
+  const lo   = targetUsd * (1 - corr);
+  const hi   = targetUsd * (1 + corr);
 
   const warnings = [];
-  let table, sources, usedMode = mode;
+  let table, source, usedMode = mode;
 
   if (mode === 'demo') {
-    table = demoTable(); sources = { lis: 'demo', csmoney: 'demo' };
+    table = demoTable();
+    source = 'demo';
   } else {
-    const live = await liveTable(exchange);
-    const usable = live.rows.some((r) => chosenPayout(r, exchange));
+    const live = await liveTable();
+    const usable = live.rows.some((r) => r.lis != null && r.lis > 0);
     if (!usable && mode === 'auto') {
-      warnings.push('Реальные прайс-листы недоступны/пусты — показываю демо-данные. См. README, как подключить источники.');
-      table = demoTable(); sources = { lis: 'demo', csmoney: 'demo' }; usedMode = 'demo';
+      warnings.push('Прайс-лист LIS недоступен/пуст — показываю демо-данные. См. README, как подключить источник.');
+      table = demoTable();
+      source = 'demo';
+      usedMode = 'demo';
     } else {
-      table = live.rows; sources = live.sources; usedMode = 'live';
-      if (live.lisErr) warnings.push('LIS: ' + live.lisErr);
-      if (live.csmErr) warnings.push('CS.money: ' + live.csmErr);
+      table = live.rows;
+      source = live.source;
+      usedMode = 'live';
+      if (live.error) warnings.push('LIS: ' + live.error);
     }
   }
 
-  // Кандидаты в ценовом коридоре по выбранной выплате
+  // Кандидаты в ценовом коридоре
   const candidates = [];
   for (const r of table) {
-    const cp = chosenPayout(r, exchange);
-    if (!cp) continue;
-    if (targetUsd > 0 && (cp.payout < lo || cp.payout > hi)) continue;
-    candidates.push(Object.assign({}, r, { payout: cp.payout, exchange: cp.ex }));
+    if (r.lis == null || r.lis <= 0) continue;
+    if (targetUsd > 0 && (r.lis < lo || r.lis > hi)) continue;
+    candidates.push({ ...r, payout: r.lis });
   }
   candidates.sort((a, b) => b.payout - a.payout);
 
-  // Цены Steam по кандидатам (демо — из набора, live — точечные запросы с лимитом)
+  // Цены Steam по кандидатам
   const matched = [], unmatched = [];
   let freshLookups = 0;
   for (const c of candidates) {
     let steam = c.steam, steamSource = 'demo';
     if (usedMode === 'live') {
       const cachedHit = cacheGet('steam:' + c.mhn, CFG.steamTtl);
-      if (cachedHit !== undefined) { steam = cachedHit.price; steamSource = 'cache'; }
-      else if (freshLookups < CFG.steamMaxLookups) {
+      if (cachedHit !== undefined) {
+        steam = cachedHit.price;
+        steamSource = 'cache';
+      } else if (freshLookups < CFG.steamMaxLookups) {
         const sp = await getSteamPrice(c.mhn);
-        steam = sp.price; steamSource = sp.source; freshLookups++;
+        steam = sp.price;
+        steamSource = sp.source;
+        freshLookups++;
       } else {
-        unmatched.push({ name: c.name, wear: c.wear, mhn: c.mhn, exchange: c.exchange,
-          payout: c.payout, why: 'лимит Steam — повтори поиск, дозапросим' });
+        unmatched.push({
+          name: c.name, wear: c.wear, mhn: c.mhn,
+          payout: c.payout,
+          why: 'лимит Steam — повтори поиск, дозапросим',
+        });
         continue;
       }
     }
     if (steam == null) {
-      unmatched.push({ name: c.name, wear: c.wear, mhn: c.mhn, exchange: c.exchange,
-        payout: c.payout, why: c.why || 'нет цены в Steam (имя ≠ market_hash_name)' });
+      unmatched.push({
+        name: c.name, wear: c.wear, mhn: c.mhn,
+        payout: c.payout,
+        why: c.why || 'нет цены в Steam (имя ≠ market_hash_name)',
+      });
       continue;
     }
     let spread = c.payout - steam;
@@ -531,23 +568,29 @@ async function runSearch(params) {
     const pct = steam > 0 ? (spread / steam) * 100 : 0;
     matched.push({
       name: c.name, wear: c.wear, mhn: c.mhn,
-      exchange: c.exchange, lis: numOrNull(c.lis), csmoney: numOrNull(c.csmoney),
-      payout: round2(c.payout), steam: round2(steam), spread: round2(spread),
-      pct: Math.round(pct * 10) / 10, steamSource,
-      links: { steam: LINKS.steam(c.mhn), exchange: LINKS[c.exchange](c.name) },
+      lis: numOrNull(c.lis),
+      payout: round2(c.payout), steam: round2(steam),
+      spread: round2(spread), pct: Math.round(pct * 10) / 10, steamSource,
+      links: { steam: LINKS.steam(c.mhn), lis: LINKS.lis(c.name) },
     });
   }
   matched.sort((a, b) => b.spread - a.spread);
-  const best = matched.length ? matched.reduce((m, r) => (r.spread > m.spread ? r : m), matched[0]) : null;
+  const best = matched.length
+    ? matched.reduce((m, r) => (r.spread > m.spread ? r : m), matched[0])
+    : null;
 
   return {
     ok: true, version: VERSION,
-    mode: usedMode, exchange, net, currency,
+    mode: usedMode, net, currency,
     fx: { rate: round4(rate), source: fx.source, currency },
     query: { amount, targetUsd: round2(targetUsd), corridorPct,
-      corridor: { lo: round2(lo), hi: round2(hi) } },
-    meta: { candidates: candidates.length, matched: matched.length,
-      unmatched: unmatched.length, steamLookups: freshLookups, sources },
+             corridor: { lo: round2(lo), hi: round2(hi) } },
+    meta: {
+      candidates: candidates.length, matched: matched.length,
+      unmatched: unmatched.length, steamLookups: freshLookups,
+      lisSource: source, lisTotal: lisState.map.size,
+      lisLastRefresh: lisState.lastRefresh,
+    },
     best, rows: matched, unmatched, warnings,
   };
 }
@@ -560,9 +603,9 @@ function round4(n) { return Math.round(n * 10000) / 10000; }
  * HTTP-СЕРВЕР
  * ========================================================================== */
 const STATIC = {
-  '/': { file: 'spread-arbitrage.html', type: 'text/html; charset=utf-8' },
-  '/spread-arbitrage.html': { file: 'spread-arbitrage.html', type: 'text/html; charset=utf-8' },
-  '/data/demo_prices.json': { file: 'data/demo_prices.json', type: 'application/json; charset=utf-8' },
+  '/':                        { file: 'spread-arbitrage.html', type: 'text/html; charset=utf-8' },
+  '/spread-arbitrage.html':   { file: 'spread-arbitrage.html', type: 'text/html; charset=utf-8' },
+  '/data/demo_prices.json':   { file: 'data/demo_prices.json',  type: 'application/json; charset=utf-8' },
 };
 
 function sendJson(res, code, obj) {
@@ -579,14 +622,18 @@ async function handleApi(pathname, q, res) {
   if (pathname === '/api/health') {
     return sendJson(res, 200, {
       ok: true, version: VERSION, mode: CFG.defaultMode,
-      exchanges: {
-        lis: { configured: !!(CFG.lisPricesFile || CFG.lisApiToken || CFG.lisBulkUrl),
-          source: CFG.lisPricesFile ? 'file' : CFG.lisApiToken ? 'api' : 'bulk' },
-        csmoney: { configured: !!(CFG.csmoneyPricesFile || CFG.csmoneyUrl),
-          source: CFG.csmoneyPricesFile ? 'file' : CFG.csmoneyUrl ? 'url' : 'demo-only' },
+      lis: {
+        configured: !!(CFG.lisPricesFile || CFG.lisApiToken || CFG.lisBulkUrl),
+        source: CFG.lisPricesFile ? 'file' : CFG.lisApiToken ? 'api' : 'bulk',
+        total: lisState.map.size,
+        cached: !!cacheGet('prices:lis', CFG.pricesTtl * 2),
+        loading: lisState.loading,
+        lastRefresh: lisState.lastRefresh || null,
+        error: lisState.error,
       },
       steam: { delayMs: CFG.steamDelayMs, maxLookups: CFG.steamMaxLookups },
       demoSkins: (DEMO.skins || []).length,
+      uptime: process.uptime(),
     });
   }
   if (pathname === '/api/fx') {
@@ -600,16 +647,25 @@ async function handleApi(pathname, q, res) {
     return sendJson(res, 200, { ok: true, name, price: sp.price, source: sp.source, error: sp.error });
   }
   if (pathname === '/api/prices') {
-    const ex = q.get('exchange') === 'csmoney' ? 'csmoney' : 'lis';
-    const r = ex === 'csmoney' ? await getCsMoneyPrices() : await getLisPrices();
-    const entries = [...r.map].slice(0, int(q.get('limit'), 50));
-    return sendJson(res, 200, { ok: true, exchange: ex, source: r.source,
-      count: r.map.size, sample: entries.map(([name, price]) => ({ name, price })), error: r.error });
+    const sample = [...lisState.map].slice(0, int(q.get('limit'), 50));
+    return sendJson(res, 200, {
+      ok: true, exchange: 'lis', source: lisState.source,
+      count: lisState.map.size,
+      sample: sample.map(([name, price]) => ({ name, price })),
+      error: lisState.error,
+    });
   }
   if (pathname === '/api/search') {
+    // Если LIS ещё не загружен — подождать
+    if (lisState.map.size === 0 && !lisState.loading) {
+      await refreshLisPrices();
+    }
     const result = await runSearch({
-      amount: q.get('amount'), currency: q.get('currency'), corridor: q.get('corridor'),
-      exchange: q.get('exchange'), net: q.get('net'), mode: q.get('mode'),
+      amount:   q.get('amount'),
+      currency:  q.get('currency'),
+      corridor:  q.get('corridor'),
+      net:       q.get('net'),
+      mode:      q.get('mode'),
     });
     return sendJson(res, 200, result);
   }
@@ -618,19 +674,27 @@ async function handleApi(pathname, q, res) {
 
 function serveStatic(pathname, res) {
   const entry = STATIC[pathname];
-  if (!entry) { res.writeHead(404, { 'Content-Type': 'text/plain' }); return res.end('404'); }
+  if (!entry) {
+    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    return res.end('404');
+  }
   fs.readFile(path.join(ROOT, entry.file), (err, buf) => {
-    if (err) { res.writeHead(404, { 'Content-Type': 'text/plain' }); return res.end('not found'); }
+    if (err) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      return res.end('not found');
+    }
     res.writeHead(200, { 'Content-Type': entry.type, 'Access-Control-Allow-Origin': '*' });
     res.end(buf);
   });
 }
 
+let server = null;
 function startServer(port) {
-  const server = http.createServer(async (req, res) => {
+  server = http.createServer(async (req, res) => {
     let u;
     try { u = new URL(req.url, 'http://localhost'); } catch (_) {
-      res.writeHead(400); return res.end('bad request');
+      res.writeHead(400);
+      return res.end('bad request');
     }
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
@@ -643,18 +707,24 @@ function startServer(port) {
     const pathname = u.pathname;
     if (pathname === '/favicon.ico') { res.writeHead(204); return res.end(); }
     if (pathname.startsWith('/api/')) {
-      try { await handleApi(pathname, u.searchParams, res); }
-      catch (e) { log('API error:', e.stack || e.message); sendJson(res, 500, { ok: false, error: e.message }); }
+      try {
+        await handleApi(pathname, u.searchParams, res);
+      } catch (e) {
+        error('API error:', e.stack || e.message);
+        sendJson(res, 500, { ok: false, error: e.message });
+      }
       return;
     }
     serveStatic(pathname, res);
   });
   server.listen(port, () => {
-    console.log(`\n  СПРЕД v${VERSION} — сервер запущен`);
+    console.log('');
+    console.log(`  СПРЕД v${VERSION} — сервер запущен`);
     console.log(`  → http://localhost:${port}`);
-    console.log(`  Режим по умолчанию: ${CFG.defaultMode}`);
-    console.log(`  LIS: ${CFG.lisPricesFile ? 'файл' : CFG.lisApiToken ? 'API-токен' : 'bulk-URL'}` +
-      ` · CS.money: ${CFG.csmoneyPricesFile ? 'файл' : CFG.csmoneyUrl ? 'URL' : 'демо'}\n`);
+    console.log(`  Режим: ${CFG.defaultMode}`);
+    const lisSrc = CFG.lisPricesFile ? 'файл' : CFG.lisApiToken ? 'API-токен' : 'bulk-URL';
+    console.log(`  LIS: ${lisSrc} · Steam: priceoverview · FX: ${hostOf(CFG.fxUrl)}`);
+    console.log('');
   });
   return server;
 }
@@ -686,15 +756,16 @@ async function cliSearch(args) {
   const currency = (args.currency || 'RUB').toUpperCase();
   const result = await runSearch({
     amount, currency, corridor: args.corridor || 5,
-    exchange: args.exchange || 'best', net: !!args.net, mode: args.mode || CFG.defaultMode,
+    net: !!args.net, mode: args.mode || CFG.defaultMode,
   });
   const dp = ['RUB', 'KZT', 'UAH'].includes(currency) ? 0 : 2;
   const toCur = (usd) => fmt(usd * result.fx.rate, dp);
 
   console.log('');
-  console.log(`  Режим: ${result.mode} · площадка: ${result.exchange} · валюта: ${currency}` +
+  console.log(`  Режим: ${result.mode} · площадка: LIS · валюта: ${currency}` +
     (result.net ? ' · чистыми (−Steam 15%)' : ''));
   console.log(`  Курс USD→${currency}: ${result.fx.rate} (${result.fx.source})`);
+  console.log(`  LIS: ${result.meta.lisTotal.toLocaleString()} скинов (${result.meta.lisSource})`);
   console.log(`  Цель: ${fmt(amount, dp)} ${currency} (~$${result.query.targetUsd}) · ` +
     `коридор ${toCur(result.query.corridor.lo)}–${toCur(result.query.corridor.hi)} ${currency} · ` +
     `кандидатов: ${result.meta.candidates}`);
@@ -704,25 +775,26 @@ async function cliSearch(args) {
   if (!result.rows.length) {
     console.log('  Нет кандидатов в этом коридоре — расширь диапазон (--corridor 10).');
   } else {
-    const pad = (s, n) => String(s).slice(0, n).padEnd(n);
+    const pad  = (s, n) => String(s).slice(0, n).padEnd(n);
     const padL = (s, n) => String(s).padStart(n);
-    console.log('  ' + pad('#', 3) + pad('Скин', 40) + pad('Площ.', 9) +
-      padL('платит', 11) + padL('Steam', 11) + padL('спред', 11) + padL('%', 8));
-    console.log('  ' + '-'.repeat(93));
+    console.log('  ' + pad('#', 3) + pad('Скин', 40) + padL('LIS платит', 14) +
+      padL('Steam', 11) + padL('спред', 11) + padL('%', 8));
+    console.log('  ' + '-'.repeat(87));
     result.rows.forEach((r, i) => {
-      const star = result.best && r.mhn === result.best.mhn ? '★' : (i + 1);
-      console.log('  ' + pad(star, 3) + pad(`${r.name} (${r.wear})`, 40) + pad(r.exchange, 9) +
-        padL(toCur(r.payout), 11) + padL(toCur(r.steam), 11) +
+      const star = result.best && r.mhn === result.best.mhn ? '★' : String(i + 1);
+      console.log('  ' + pad(star, 3) + pad(`${r.name} (${r.wear})`, 40) +
+        padL(toCur(r.payout), 14) + padL(toCur(r.steam), 11) +
         padL('+' + toCur(r.spread), 11) + padL('+' + r.pct.toFixed(1) + '%', 8));
     });
   }
 
   if (result.best) {
     console.log('');
-    console.log(`  ★ Лучшая сделка: ${result.best.name} (${result.best.wear}) · ${result.best.exchange}`);
-    console.log(`    Steam ${toCur(result.best.steam)} → платит ${toCur(result.best.payout)} ${currency}` +
+    console.log(`  ★ Лучшая сделка: ${result.best.name} (${result.best.wear}) · LIS`);
+    console.log(`    Steam ${toCur(result.best.steam)} → LIS платит ${toCur(result.best.payout)} ${currency}` +
       ` · спред +${toCur(result.best.spread)} ${currency} (+${result.best.pct.toFixed(1)}%)`);
     console.log(`    ${result.best.links.steam}`);
+    console.log(`    ${result.best.links.lis}`);
   }
   if (result.unmatched.length) {
     console.log('');
@@ -731,7 +803,7 @@ async function cliSearch(args) {
       console.log(`    · ${u.name}${u.wear ? ' (' + u.wear + ')' : ''} — ${u.why}`));
   }
   console.log('');
-  console.log('  Спред ≠ чистый профит: вычти комиссию Steam ~15%, курс и удержания LIS/CS.money.');
+  console.log('  Спред ≠ чистый профит: вычти комиссию Steam ~15%, курс и удержания LIS.');
   console.log('');
 }
 
@@ -750,13 +822,45 @@ async function cliSteam(args) {
   console.log(`${name}: ${sp.price == null ? 'нет цены' : '$' + sp.price} (${sp.source})${sp.error ? ' — ' + sp.error : ''}`);
 }
 
-async function cliDiag(args) {
-  const ex = args.exchange === 'csmoney' ? 'csmoney' : 'lis';
-  console.log(`Источник: ${ex}`);
-  const r = ex === 'csmoney' ? await getCsMoneyPrices() : await getLisPrices();
-  console.log(`  source=${r.source} · позиций=${r.map.size}${r.error ? ' · ошибка: ' + r.error : ''}`);
-  [...r.map].slice(0, 10).forEach(([name, price]) => console.log(`    ${name} → $${price}`));
-  if (!r.map.size) console.log('    (пусто — настрой LIS_PRICES_FILE / CSMONEY_URL, см. README)');
+async function cliDiag() {
+  console.log(`Источник: LIS`);
+  console.log(`  source=${lisState.source} · позиций=${lisState.map.size}${lisState.error ? ' · ошибка: ' + lisState.error : ''}`);
+  [...lisState.map].slice(0, 10).forEach(([name, price]) => console.log(`    ${name} → $${price}`));
+  if (!lisState.map.size) console.log('    (пусто — настрой LIS_PRICES_FILE / LIS_API_TOKEN, см. README)');
+}
+
+/* ============================================================================
+ * LIFECYCLE — graceful shutdown + process handlers
+ * ========================================================================== */
+function setupProcessHandlers() {
+  const shutdown = (sig) => {
+    info(`получен ${sig} — завершение …`);
+    if (server) {
+      server.close(() => {
+        info('сервер остановлен');
+        process.exit(0);
+      });
+      // Ждём最多 5 сек, потом убиваем
+      setTimeout(() => {
+        warn('graceful shutdown timeout — принудительное завершение');
+        process.exit(1);
+      }, 5000).unref();
+    } else {
+      process.exit(0);
+    }
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT',  () => shutdown('SIGINT'));
+
+  process.on('unhandledRejection', (reason, promise) => {
+    error('Unhandled Rejection:', reason);
+  });
+  process.on('uncaughtException', (err) => {
+    error('Uncaught Exception:', err.message, err.stack);
+    // В продакшене можно решить — убивать или продолжать
+    // Для арбитражного скрипта лучше упасть и перезапуститься
+    process.exit(1);
+  });
 }
 
 /* ============================================================================
@@ -764,20 +868,44 @@ async function cliDiag(args) {
  * ========================================================================== */
 async function main() {
   const argv = process.argv.slice(2);
-  const cmd = argv[0];
+  const cmd  = argv[0];
   const args = parseArgs(argv.slice(1));
 
+  setupProcessHandlers();
+
   if (cmd === 'search') return cliSearch(args);
-  if (cmd === 'fx') return cliFx();
-  if (cmd === 'steam') return cliSteam(args);
-  if (cmd === 'diag') return cliDiag(args);
+  if (cmd === 'fx')     return cliFx();
+  if (cmd === 'steam')  return cliSteam(args);
+  if (cmd === 'diag')   return cliDiag();
   if (cmd === 'help' || cmd === '--help' || cmd === '-h') {
-    console.log(fs.readFileSync(__filename, 'utf8').split('\n').slice(2, 24).join('\n').replace(/^ \* ?/gm, ''));
+    console.log(fs.readFileSync(__filename, 'utf8').split('\n').slice(2, 22).join('\n').replace(/^ \* ?/gm, ''));
     return;
   }
+
   // serve (по умолчанию)
   const port = int((cmd === 'serve' ? args.port : process.env.PORT) || CFG.port, CFG.port);
+
+  // 1) Восстановить LIS из кэша (мгновенно, если есть)
+  initLisFromCache();
+
+  // 2) Поднять сервер (не ждём загрузки прайсов)
   startServer(port);
+
+  // 3) Загрузить/обновить LIS прайсы в фоне
+  if (lisState.map.size === 0) {
+    info('LIS: первая загрузка прайсов (может занять время для bulk) …');
+  } else {
+    info('LIS: обновление прайсов в фоне …');
+  }
+  refreshLisPrices().then(() => {
+    info(`LIS: готов — ${lisState.map.size.toLocaleString()} скинов (${lisState.source})`);
+  });
+
+  // 4) Фоновое обновление каждые 30 мин
+  startBgRefresh();
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+main().catch((e) => {
+  error('fatal:', e.stack || e.message);
+  process.exit(1);
+});

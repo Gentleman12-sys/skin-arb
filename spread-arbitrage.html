@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>СПРЕД — арбитраж скинов CS2 · Steam ↔ LIS-Skins / CS.money</title>
+<title>СПРЕД — арбитраж скинов CS2 · Steam ↔ LIS-Skins</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@300;400;500;600;700;800&family=Golos+Text:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -28,8 +28,6 @@
   --steam-deep:#2b6fa3;
   --lis:#ff7c34;
   --lis-deep:#c4561c;
-  --csm:#b48bff;          /* CS.money — вторая площадка */
-  --csm-deep:#7c4dd6;
   --profit:#c8f93c;
   --profit-deep:#90c517;
   --loss:#ff5c6a;
@@ -53,16 +51,15 @@ body{
   -webkit-font-smoothing:antialiased;
   overflow-x:hidden;
 }
-body::before{ /* атмосферные засветки рынков */
+body::before{
   content:"";
   position:fixed; inset:0; z-index:0; pointer-events:none;
   background:
     radial-gradient(60% 50% at 8% -5%, rgba(92,179,239,.16), transparent 60%),
     radial-gradient(55% 45% at 100% 0%, rgba(255,124,52,.13), transparent 60%),
-    radial-gradient(45% 40% at 72% 0%, rgba(180,139,255,.10), transparent 60%),
     radial-gradient(80% 60% at 50% 120%, rgba(200,249,60,.06), transparent 60%);
 }
-body::after{ /* зерно */
+body::after{
   content:""; position:fixed; inset:0; z-index:0; pointer-events:none; opacity:.035;
   background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
@@ -150,7 +147,6 @@ header.nav.scrolled{
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
 .eyebrow .v{color:var(--steam)}
 .eyebrow .x{color:var(--lis)}
-.eyebrow .csm{color:var(--csm)}
 
 h1{
   font-family:"Unbounded";font-weight:700;letter-spacing:-.02em;line-height:1.02;
@@ -171,9 +167,7 @@ h1 .hl{
 @keyframes rise{to{opacity:1;transform:none}}
 
 /* мини-объяснение пример */
-.example{
-  margin-top:30px;display:flex;gap:14px;flex-wrap:wrap;
-}
+.example{margin-top:30px;display:flex;gap:14px;flex-wrap:wrap}
 .ex-card{
   flex:1;min-width:165px;padding:14px 16px;border-radius:14px;
   background:var(--panel);border:1px solid var(--line);position:relative;overflow:hidden;
@@ -206,20 +200,6 @@ h1 .hl{
   font-family:"Unbounded";font-weight:600;font-size:34px;letter-spacing:-.01em;padding:8px 0;
 }
 .amount-box .usd-hint{font-family:"JetBrains Mono";font-size:12.5px;color:var(--faint);white-space:nowrap}
-
-/* сегмент-переключатель площадки */
-.seg{display:flex;gap:4px;background:var(--bg-2);border:1px solid var(--line-2);border-radius:13px;padding:4px}
-.seg button{
-  flex:1;border:0;background:transparent;color:var(--dim);font-family:inherit;font-weight:600;font-size:13px;
-  padding:10px 6px;border-radius:9px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:7px;
-  transition:background .18s var(--ease-out),color .18s,box-shadow .18s;
-}
-.seg button .d{width:7px;height:7px;border-radius:50%}
-.seg button[data-ex="lis"] .d{background:var(--lis)}
-.seg button[data-ex="csmoney"] .d{background:var(--csm)}
-.seg button[data-ex="best"] .d{background:linear-gradient(90deg,var(--lis),var(--csm))}
-.seg button:hover{color:var(--text)}
-.seg button.active{background:var(--panel-hi);color:var(--text);box-shadow:inset 0 0 0 1px var(--line-2)}
 
 .corridor{margin-top:22px}
 .cor-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px}
@@ -258,7 +238,6 @@ input[type=range]::-moz-range-thumb{width:18px;height:18px;border-radius:50%;bac
 .deck-foot{display:flex;gap:14px;margin-top:16px;font-size:11.5px;color:var(--faint);font-family:"JetBrains Mono";flex-wrap:wrap}
 .deck-foot span{display:flex;align-items:center;gap:6px}
 .deck-foot .lis-d{width:6px;height:6px;border-radius:50%;background:var(--lis)}
-.deck-foot .csm-d{width:6px;height:6px;border-radius:50%;background:var(--csm)}
 .deck-foot .st-d{width:6px;height:6px;border-radius:50%;background:var(--steam)}
 
 /* ============================================================
@@ -275,7 +254,7 @@ input[type=range]::-moz-range-thumb{width:18px;height:18px;border-radius:50%;bac
 .warnbar svg{width:16px;height:16px;flex:none;margin-top:2px}
 
 /* статтайлы */
-.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:24px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:24px}
 .stat{
   background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:18px 18px 16px;position:relative;overflow:hidden;
 }
@@ -288,7 +267,7 @@ input[type=range]::-moz-range-thumb{width:18px;height:18px;border-radius:50%;bac
 /* лучшая сделка */
 .best{
   position:relative;border-radius:22px;padding:1px;margin-bottom:30px;overflow:hidden;
-  background:linear-gradient(120deg,rgba(92,179,239,.5),rgba(200,249,60,.55),rgba(180,139,255,.5));
+  background:linear-gradient(120deg,rgba(92,179,239,.5),rgba(200,249,60,.55),rgba(255,124,52,.5));
 }
 .best-inner{
   position:relative;border-radius:21px;padding:28px 30px;
@@ -317,7 +296,6 @@ input[type=range]::-moz-range-thumb{width:18px;height:18px;border-radius:50%;bac
 .pp .lab{display:flex;align-items:center;gap:7px;font-family:"JetBrains Mono";font-size:11px;letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px}
 .pp.steam .lab{color:var(--steam)} .pp.steam .lab .d{background:var(--steam)}
 .pp.lis .lab{color:var(--lis)} .pp.lis .lab .d{background:var(--lis)}
-.pp.csmoney .lab{color:var(--csm)} .pp.csmoney .lab .d{background:var(--csm)}
 .pp .lab .d{width:7px;height:7px;border-radius:50%}
 .pp .num{font-family:"JetBrains Mono";font-weight:700;font-size:25px;color:var(--text)}
 .pp .num small{font-size:13px;color:var(--faint);font-weight:500}
@@ -341,15 +319,7 @@ input[type=range]::-moz-range-thumb{width:18px;height:18px;border-radius:50%;bac
 .lnk:active{transform:scale(.97)}
 .lnk.steam{border-color:rgba(92,179,239,.4)} .lnk.steam:hover{background:rgba(92,179,239,.1)}
 .lnk.lis{border-color:rgba(255,124,52,.4)} .lnk.lis:hover{background:rgba(255,124,52,.1)}
-.lnk.csmoney{border-color:rgba(180,139,255,.4)} .lnk.csmoney:hover{background:rgba(180,139,255,.1)}
 .lnk svg{width:15px;height:15px}
-
-/* площадка-бейдж */
-.ex-badge{display:inline-flex;align-items:center;gap:6px;font-family:"JetBrains Mono";font-size:11px;font-weight:600;
-  letter-spacing:.02em;padding:4px 9px;border-radius:7px;border:1px solid var(--line-2);white-space:nowrap}
-.ex-badge .d{width:6px;height:6px;border-radius:50%}
-.ex-badge.lis{color:var(--lis);border-color:rgba(255,124,52,.35);background:rgba(255,124,52,.07)} .ex-badge.lis .d{background:var(--lis)}
-.ex-badge.csmoney{color:var(--csm);border-color:rgba(180,139,255,.35);background:rgba(180,139,255,.08)} .ex-badge.csmoney .d{background:var(--csm)}
 
 /* панель управления таблицей */
 .table-controls{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px;flex-wrap:wrap}
@@ -364,7 +334,7 @@ input[type=range]::-moz-range-thumb{width:18px;height:18px;border-radius:50%;bac
 /* таблица */
 .tbl-wrap{border:1px solid var(--line);border-radius:18px;overflow:hidden;background:var(--panel);position:relative}
 .scanline{position:absolute;left:0;top:0;height:2px;width:100%;z-index:5;opacity:0;
-  background:linear-gradient(90deg,transparent,var(--steam),var(--profit),var(--csm),transparent);
+  background:linear-gradient(90deg,transparent,var(--steam),var(--profit),var(--lis),transparent);
   box-shadow:0 0 14px var(--profit)}
 .tbl-wrap.scanning .scanline{opacity:1;animation:scan 1.1s var(--ease-in-out) infinite}
 @keyframes scan{0%{transform:translateY(0)}100%{transform:translateY(420px)}}
@@ -391,6 +361,7 @@ td.num{text-align:right;font-family:"JetBrains Mono";font-variant-numeric:tabula
 .cell-skin .name{font-weight:600;line-height:1.25}
 .cell-skin .wear{margin-top:4px}
 .steam-c{color:var(--steam);font-weight:600}
+.lis-c{color:var(--lis);font-weight:600}
 .spread-c{color:var(--profit);font-weight:700}
 .spread-c.neg{color:var(--loss)}
 .pct-pill{display:inline-block;min-width:54px;text-align:center;padding:4px 9px;border-radius:7px;font-family:"JetBrains Mono";
@@ -405,7 +376,6 @@ td.num{text-align:right;font-family:"JetBrains Mono";font-variant-numeric:tabula
 .row-link a:hover{color:var(--text);border-color:var(--line-2);background:var(--panel-2);transform:translateY(-1px)}
 .row-link a.s:hover{color:var(--steam);border-color:rgba(92,179,239,.4)}
 .row-link a.l:hover{color:var(--lis);border-color:rgba(255,124,52,.4)}
-.row-link a.c:hover{color:var(--csm);border-color:rgba(180,139,255,.4)}
 .row-link svg{width:14px;height:14px}
 
 @media (hover:hover) and (pointer:fine){
@@ -427,175 +397,151 @@ tbody tr.reveal{opacity:0;transform:translateY(7px);animation:rowIn .42s var(--e
 .um-chip .why{font-family:"JetBrains Mono";font-size:10.5px;color:var(--lis);letter-spacing:.04em}
 
 /* дисклеймер */
-.note{margin-top:26px;display:flex;gap:15px;padding:20px 22px;border-radius:16px;background:rgba(245,196,81,.05);border:1px solid rgba(245,196,81,.18)}
-.note .i{flex:none;width:26px;height:26px;border-radius:8px;display:grid;place-items:center;background:rgba(245,196,81,.14);color:var(--gold)}
-.note .i svg{width:15px;height:15px}
-.note p{margin:0;font-size:13.5px;color:var(--dim);line-height:1.6}
-.note b{color:var(--gold);font-weight:600}
+.note{
+  margin-top:40px;padding:18px 22px;border-radius:14px;display:flex;gap:14px;align-items:flex-start;
+  background:var(--panel);border:1px solid var(--line);
+}
+.note .i{flex:none;color:var(--faint)}
+.note .i svg{width:18px;height:18px}
+.note p{margin:0;font-size:13px;color:var(--dim);line-height:1.6}
+.note p b{color:var(--text)}
 
-/* ============================================================
-   КАК ЭТО РАБОТАЕТ
-   ============================================================ */
-.how{padding:70px 0;border-top:1px solid var(--line)}
-.how h2{font-family:"Unbounded";font-weight:600;font-size:clamp(24px,3.4vw,36px);letter-spacing:-.02em;margin:0 0 8px;text-align:center}
-.how .sub{text-align:center;color:var(--dim);max-width:60ch;margin:0 auto 46px}
-.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
-.step{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:24px;position:relative;transition:transform .25s var(--ease-out),border-color .25s}
-.step:hover{transform:translateY(-3px);border-color:var(--line-2)}
-.step .n{font-family:"Unbounded";font-weight:700;font-size:40px;line-height:1;
-  background:linear-gradient(180deg,var(--steam),var(--csm));-webkit-background-clip:text;background-clip:text;color:transparent;opacity:.85}
-.step h3{margin:16px 0 7px;font-size:17px;font-weight:700}
-.step p{margin:0;color:var(--dim);font-size:14px;line-height:1.6}
-.markets{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:18px}
-.mk{padding:22px;border-radius:18px;border:1px solid var(--line)}
-.mk.steam{background:linear-gradient(160deg,rgba(92,179,239,.08),transparent)}
-.mk.lis{background:linear-gradient(160deg,rgba(255,124,52,.08),transparent)}
-.mk.csm{background:linear-gradient(160deg,rgba(180,139,255,.08),transparent)}
-.mk .h{display:flex;align-items:center;gap:10px;font-weight:700;font-size:16px;margin-bottom:8px}
-.mk.steam .h{color:var(--steam)} .mk.lis .h{color:var(--lis)} .mk.csm .h{color:var(--csm)}
-.mk .h .d{width:10px;height:10px;border-radius:50%}
-.mk.steam .h .d{background:var(--steam)} .mk.lis .h .d{background:var(--lis)} .mk.csm .h .d{background:var(--csm)}
-.mk p{margin:0;color:var(--dim);font-size:13.5px;line-height:1.6}
+/* HOW */
+.how{padding:60px 0 80px}
+.how h2{font-family:"Unbounded";font-weight:600;font-size:clamp(22px,3vw,30px);letter-spacing:-.02em;margin:0 0 12px}
+.how .sub{color:var(--dim);font-size:15px;max-width:64ch;margin-bottom:40px;line-height:1.6}
+.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-bottom:50px}
+.step{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:26px 22px}
+.step .n{font-family:"JetBrains Mono";font-size:13px;color:var(--lis);font-weight:700;letter-spacing:.04em;margin-bottom:14px}
+.step h3{font-family:"Unbounded";font-weight:500;font-size:15px;margin:0 0 8px;letter-spacing:-.01em}
+.step p{color:var(--dim);font-size:13.5px;line-height:1.55;margin:0}
+.markets{display:grid;grid-template-columns:repeat(2,1fr);gap:20px}
+.mk{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:26px 24px}
+.mk .h{display:flex;align-items:center;gap:10px;font-weight:700;font-size:15px;margin-bottom:10px}
+.mk .h .d{width:9px;height:9px;border-radius:50%;flex:none}
+.mk.steam .h .d{background:var(--steam)}
+.mk.lis .h .d{background:var(--lis)}
+.mk p{color:var(--dim);font-size:13.5px;line-height:1.55;margin:0}
 
-/* ============================================================
-   FOOTER
-   ============================================================ */
-footer{border-top:1px solid var(--line);padding:40px 0 60px}
-.foot{display:flex;justify-content:space-between;gap:30px;flex-wrap:wrap;align-items:flex-start}
+/* FOOTER */
+footer{border-top:1px solid var(--line);padding:50px 0 30px}
+.foot{display:flex;justify-content:space-between;gap:40px;flex-wrap:wrap;margin-bottom:36px}
 .foot .brand{margin-bottom:14px}
-.foot p{margin:0;color:var(--faint);font-size:12.5px;max-width:46ch;line-height:1.6}
-.foot-links{display:flex;gap:40px;flex-wrap:wrap}
-.foot-col h5{font-family:"JetBrains Mono";font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);margin:0 0 12px}
-.foot-col a{display:block;color:var(--faint);font-size:13px;padding:4px 0;transition:color .15s}
+.foot>p{color:var(--faint);font-size:13px;max-width:46ch;line-height:1.6;margin-top:14px}
+.foot-links{display:flex;gap:60px;flex-wrap:wrap}
+.foot-col{min-width:120px}
+.foot-col h5{font-family:"JetBrains Mono";font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin:0 0 14px}
+.foot-col a{display:block;color:var(--dim);font-size:13px;padding:4px 0;transition:color .15s}
 .foot-col a:hover{color:var(--text)}
-.copyright{margin-top:34px;padding-top:20px;border-top:1px solid var(--line);font-size:12px;color:var(--faint);font-family:"JetBrains Mono"}
+.copyright{text-align:center;color:var(--faint);font-size:12px;font-family:"JetBrains Mono";letter-spacing:.04em}
 
-/* ============================================================
-   ADAPTIVE
-   ============================================================ */
-@media (max-width:940px){
-  .hero-grid{grid-template-columns:1fr;gap:34px}
-  .stats{grid-template-columns:repeat(2,1fr)}
+/* RESPONSIVE */
+@media(max-width:768px){
+  .hero-grid{grid-template-columns:1fr;gap:0}
+  .deck{padding:22px 18px}
+  .best-body{grid-template-columns:1fr;gap:24px;text-align:center}
+  .price-pair{justify-content:center}
+  .spread-block{text-align:center}
+  .stats{grid-template-columns:1fr 1fr}
   .steps{grid-template-columns:1fr}
-  .best-body{grid-template-columns:1fr;gap:24px}
-  .spread-block{text-align:left}
-  .price-pair{justify-content:flex-start}
   .markets{grid-template-columns:1fr}
+  .foot{flex-direction:column}
+  .foot-links{gap:30px}
   .nav-links{display:none}
 }
-@media (max-width:620px){
-  .wrap{padding:0 16px}
-  .stats{grid-template-columns:1fr 1fr}
-  .example{flex-direction:column}
-  .deck-foot{flex-direction:column;gap:6px}
+@media(max-width:480px){
+  .stats{grid-template-columns:1fr}
   .tbl-wrap{overflow-x:auto}
-  table{min-width:760px}
-  .badge-demo{display:none}
-}
-
-@media (prefers-reduced-motion:reduce){
-  *{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.08s!important;scroll-behavior:auto}
-  .tbl-wrap.scanning .scanline{display:none}
+  table{min-width:620px}
+  .example{flex-direction:column}
 }
 </style>
 </head>
-<body>
+<body id="top">
 
 <!-- ===================== NAV ===================== -->
 <header class="nav" id="nav">
   <div class="wrap nav-inner">
     <a class="brand" href="#top">
-      <span class="glyph">
-        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M5 17 L11 5 M19 17 L13 5 M3 17h6 M15 17h6"/>
-        </svg>
-      </span>
+      <span class="glyph"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 17 L11 5 M19 17 L13 5 M3 17h6 M15 17h6"/></svg></span>
       <b>СПРЕД</b>
     </a>
     <nav class="nav-links">
       <a href="#top">Поиск</a>
-      <a href="#how">Как это работает</a>
-      <a href="#markets">Площадки</a>
+      <a href="#how">Как работает</a>
     </nav>
     <div class="nav-right">
-      <span class="badge-demo" id="modeBadge" title="Источник цен"><span class="pip"></span>demo · мок-данные</span>
       <div class="cur-select" id="curSelect">
         <button class="cur-btn" id="curBtn">
-          <span class="sym mono" id="curBtnSym">₽</span>
+          <span id="curBtnSym">₽</span>
           <span id="curBtnName">RUB</span>
-          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
         </button>
         <div class="cur-menu" id="curMenu"></div>
       </div>
+      <span class="badge-demo" id="modeBadge"><span class="pip"></span>demo</span>
     </div>
   </div>
 </header>
 
 <!-- ===================== HERO ===================== -->
-<main id="top">
 <section class="hero">
   <div class="wrap hero-grid">
     <div class="hero-left">
-      <span class="eyebrow"><span class="dot"></span> <span class="v">STEAM</span> ↔ <span class="x">LIS</span> · <span class="csm">CS.MONEY</span> · CS2</span>
-      <h1>Выводи деньги со скинов <span class="hl">по максимуму</span>.</h1>
-      <p class="lede">Указываешь сумму, которую хочешь получить на карту. СПРЕД сверяет, сколько за скин платят <b style="color:var(--lis)">LIS-Skins</b> и <b style="color:var(--csm)">CS.money</b>, берёт <b>лучшую</b> выплату и ставит наверх скин, который в&nbsp;Стиме стоит дешевле всего относительно неё.</p>
+      <div class="eyebrow">
+        <span class="dot"></span>
+        Steam <span class="v">↔</span> LIS-Skins <span class="x">·</span> v2.0
+      </div>
+      <h1>Найди <span class="hl">выгодный</span> скин</h1>
+      <p class="lede">Введи сумму, которую хочешь получить на карту — СПРЕД найдёт скин, который в Steam стоит дешевле всего относительно того, что за него платит LIS-Skins.</p>
       <div class="example">
         <div class="ex-card">
-          <span class="tag">Вариант A</span>
-          <div class="skin">AK-47 · обычный</div>
-          <div class="ex-row"><span>Steam</span><span class="mono">$70.0</span></div>
-          <div class="ex-row"><span>Площадка платит</span><span class="mono">$80.0</span></div>
+          <div class="tag">Вариант A</div>
+          <div class="skin">AK-47 | Asiimov FT</div>
+          <div class="ex-row"><span>Steam</span> <span class="mono">$70.0</span></div>
+          <div class="ex-row"><span>LIS платит</span> <span class="mono">$80.0</span></div>
+          <div class="ex-row" style="margin-top:8px"><span>Спред</span> <span class="mono" style="color:var(--profit)">+$10.0</span></div>
         </div>
         <div class="ex-card win">
-          <span class="win-flag">↑ выгоднее</span>
-          <span class="tag">Вариант B</span>
-          <div class="skin">AK-47 · второй</div>
-          <div class="ex-row"><span>Steam</span><span class="mono">$66.2</span></div>
-          <div class="ex-row"><span>Площадка платит</span><span class="mono">$80.0</span></div>
+          <div class="win-flag">выгоднее</div>
+          <div class="tag">Вариант B</div>
+          <div class="skin">AK-47 | Redline FT</div>
+          <div class="ex-row"><span>Steam</span> <span class="mono">$66.2</span></div>
+          <div class="ex-row"><span>LIS платит</span> <span class="mono">$80.0</span></div>
+          <div class="ex-row" style="margin-top:8px"><span>Спред</span> <span class="mono" style="color:var(--profit)">+$13.8</span></div>
         </div>
       </div>
     </div>
 
-    <!-- панель -->
-    <div class="deck" id="deck">
-      <h3>Найти выгодный скин</h3>
-      <p class="sub">Сколько хочешь получить на вывод?</p>
+    <div class="deck">
+      <h3>Поиск спреда</h3>
+      <p class="sub">Укажи сумму выплаты и коридор поиска</p>
 
-      <label class="field-label">Сумма к выводу</label>
+      <label class="field-label">Сумма выплаты</label>
       <div class="amount-box">
         <span class="cur" id="amtCur">₽</span>
-        <input id="amount" type="text" inputmode="numeric" value="8 000" aria-label="Сумма к выводу">
-        <span class="usd-hint" id="usdHint">≈ $86.96</span>
-      </div>
-
-      <div class="corridor">
-        <label class="field-label" style="margin-bottom:9px">Площадка скупки</label>
-        <div class="seg" id="exSeg">
-          <button data-ex="best" class="active"><span class="d"></span> Лучшая</button>
-          <button data-ex="lis"><span class="d"></span> LIS</button>
-          <button data-ex="csmoney"><span class="d"></span> CS.money</button>
-        </div>
+        <input type="text" id="amount" placeholder="8 000" inputmode="numeric" autocomplete="off">
+        <span class="usd-hint mono" id="usdHint">≈ $0.00</span>
       </div>
 
       <div class="corridor">
         <div class="cor-head">
-          <label class="field-label" style="margin:0">Ширина коридора</label>
+          <span class="field-label" style="margin:0">Коридор поиска</span>
           <span class="val" id="corVal">±5%</span>
         </div>
-        <input type="range" id="corridor" min="1" max="15" step="1" value="5">
+        <input type="range" id="corridor" min="1" max="15" value="5" step="1">
         <div class="range-band" id="band">7 600 ₽ — 8 400 ₽</div>
       </div>
 
       <button class="go" id="goBtn">
-        <svg class="search-i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-        <span class="spin"></span>
+        <svg class="search-i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
         <span class="lbl">Найти спред</span>
+        <span class="spin"></span>
       </button>
 
       <div class="deck-foot">
-        <span><span class="lis-d"></span> LIS</span>
-        <span><span class="csm-d"></span> CS.money</span>
-        <span><span class="st-d"></span> Steam — кандидаты</span>
+        <span><span class="lis-d"></span> LIS-Skins — payout USD</span>
+        <span><span class="st-d"></span> Steam Market — lowest price</span>
       </div>
     </div>
   </div>
@@ -637,7 +583,7 @@ footer{border-top:1px solid var(--line);padding:40px 0 60px}
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14m-6-6 6 6-6 6"/></svg>
             </div>
             <div class="pp lis" id="bestPp">
-              <div class="lab"><span class="d"></span> <span id="bestExName">LIS платит</span></div>
+              <div class="lab"><span class="d"></span> LIS платит</div>
               <div class="num" id="bestLis"></div>
             </div>
           </div>
@@ -648,8 +594,8 @@ footer{border-top:1px solid var(--line);padding:40px 0 60px}
           </div>
         </div>
         <div class="best-links">
-          <a class="lnk steam" id="bestSteamLink" target="_blank" rel="noopener"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 3h6v6m0-6L10 14"/><path d="M19 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5"/></svg> Открыть в Steam</a>
-          <a class="lnk lis" id="bestExLink" target="_blank" rel="noopener"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 3h6v6m0-6L10 14"/><path d="M19 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5"/></svg> <span id="bestExLinkLabel">Открыть на LIS-Skins</span></a>
+          <a class="lnk steam" id="bestSteamLink" target="_blank" rel="noopener"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 3h6v6m0-6L10 14"/><path d="M19 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5"/></svg> Steam</a>
+          <a class="lnk lis" id="bestLisLink" target="_blank" rel="noopener"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 3h6v6m0-6L10 14"/><path d="M19 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5"/></svg> LIS-Skins</a>
         </div>
       </div>
     </div>
@@ -672,8 +618,7 @@ footer{border-top:1px solid var(--line);padding:40px 0 60px}
           <tr>
             <th class="no-sort" style="width:30px">#</th>
             <th data-sort="name">Скин <span class="sort">↕</span></th>
-            <th class="no-sort">Площадка</th>
-            <th class="num" data-sort="payout">Платит <span class="sort">↕</span></th>
+            <th class="num" data-sort="lis">LIS платит <span class="sort">↕</span></th>
             <th class="num" data-sort="steam">Steam <span class="sort">↕</span></th>
             <th class="num active" data-sort="spread">Спред <span class="sort">↓</span></th>
             <th class="num" data-sort="pct">% <span class="sort">↕</span></th>
@@ -687,14 +632,14 @@ footer{border-top:1px solid var(--line);padding:40px 0 60px}
     <!-- не вошли -->
     <div class="unmatched">
       <h4>Не вошли в рейтинг</h4>
-      <p class="desc">По этим скинам цена в Steam не нашлась: имя на площадке не совпадает с <span class="mono" style="color:var(--dim)">market_hash_name</span> в Стиме — обычно из-за спецсимволов ★ у ножей/перчаток или приставки StatTrak™. Их не выбрасываем молча, а показываем отдельно.</p>
+      <p class="desc">По этим скинам цена в Steam не нашлась: имя на площадке не совпадает с <span class="mono" style="color:var(--dim)">market_hash_name</span> в Стиме — обычно из-за спецсимволов ★ у ножей/перчаток или приставки StatTrak™.</p>
       <div class="um-list" id="umList"></div>
     </div>
 
     <!-- дисклеймер -->
     <div class="note">
       <span class="i"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg></span>
-      <p><b>Спред ≠ чистый профит.</b> Это просто разница цен Steam и площадки скупки (LIS/CS.money) на момент запуска. Реальная выгода меньше: комиссия Steam ~15%, курс валют и удержание выплат на стороне площадки. Цифры — ориентир, а не гарантия. Цены на всех площадках меняются.</p>
+      <p><b>Спред ≠ чистый профит.</b> Это просто разница цен Steam и LIS-Skins на момент запуска. Реальная выгода меньше: комиссия Steam ~15%, курс валют и удержание выплат на стороне LIS. Цифры — ориентир, а не гарантия. Цены на всех площадках меняются.</p>
     </div>
   </div>
 </section>
@@ -703,16 +648,15 @@ footer{border-top:1px solid var(--line);padding:40px 0 60px}
 <section class="how" id="how">
   <div class="wrap">
     <h2>Как это работает</h2>
-    <p class="sub">Ни площадки скупки, ни Steam не умеют искать «дай все скины по цене ~8000₽» — поиск работает по названию. Поэтому прайсы LIS и CS.money выгружаются целиком один раз, а тяжёлый Steam проверяется только по кандидатам из коридора.</p>
+    <p class="sub">Ни LIS-Skins, ни Steam не умеют искать «дай все скины по цене ~8000₽» — поиск работает по названию. Поэтому прайс LIS выгружается один раз и кэшируется, а Steam проверяется только по кандидатам из коридора.</p>
     <div class="steps">
-      <div class="step"><div class="n">01</div><h3>Прайсы целиком</h3><p>Один запрос на каждую площадку — вся таблица цен LIS и CS.money в долларах. Кэшируется на диск, чтобы не дёргать API повторно.</p></div>
-      <div class="step"><div class="n">02</div><h3>Лучшая выплата + коридор</h3><p>По каждому скину берём, кто платит больше — LIS или CS.money. Вокруг твоей суммы строим диапазон ±5% и отбираем кандидатов.</p></div>
-      <div class="step"><div class="n">03</div><h3>Сверка со Steam</h3><p>Только для кандидатов берётся цена Steam Market. С паузами и кэшем — у эндпоинта лимит ~20 запросов в минуту.</p></div>
+      <div class="step"><div class="n">01</div><h3>Прайс LIS (один раз)</h3><p>Полная таблица цен LIS-Skins загружается при старте сервера и обновляется каждые 30 минут в фоне. Результат кэшируется в памяти и на диске — поиск не ждёт загрузки.</p></div>
+      <div class="step"><div class="n">02</div><h3>Коридор цены</h3><p>Вокруг введённой суммы строится диапазон ±N%. Из кэша мгновенно выбираются скины, которые LIS платит в этом диапазоне — обычно несколько десятков кандидатов.</p></div>
+      <div class="step"><div class="n">03</div><h3>Сверка со Steam</h3><p>Только для кандидатов запрашивается цена Steam Market. С паузами и кэшем — у эндпоинта лимит ~20 запросов в минуту. Чем уже коридор — тем быстрее.</p></div>
     </div>
     <div class="markets" id="markets">
       <div class="mk steam"><div class="h"><span class="d"></span> Steam Community Market</div><p>Публичный витринный рынок Valve. Берём минимальную цену лота (при отсутствии — медианную), запрашиваем в USD. Жёсткий лимит запросов, поэтому проверяем точечно.</p></div>
-      <div class="mk lis"><div class="h"><span class="d"></span> LIS-Skins</div><p>Площадка скупки скинов: платит за предмет фиксированную сумму. API отдаёт прайс в долларах — внутри всё считается в USD.</p></div>
-      <div class="mk csm"><div class="h"><span class="d"></span> CS.money</div><p>Вторая площадка скупки/обмена. По каждому скину сравниваем её выплату с LIS и берём ту, что выгоднее — в режиме «Лучшая».</p></div>
+      <div class="mk lis"><div class="h"><span class="d"></span> LIS-Skins</div><p>Площадка скупки скинов: платит за предмет фиксированную сумму в долларах. Прайс выгружается один раз, кэшируется в памяти и обновляется в фоне.</p></div>
     </div>
   </div>
 </section>
@@ -727,12 +671,11 @@ footer{border-top:1px solid var(--line);padding:40px 0 60px}
         <span class="glyph"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 17 L11 5 M19 17 L13 5 M3 17h6 M15 17h6"/></svg></span>
         <b>СПРЕД</b>
       </a>
-      <p>Сверка цен Steam ↔ LIS-Skins / CS.money для вывода денег со скинов CS2. Без сервера показывает демо-данные; с локальным бэкендом (node server.js) — реальные цены.</p>
+      <p>Сверка цен Steam ↔ LIS-Skins для вывода денег со скинов CS2. Без сервера показывает демо-данные; с бэкендом (node server.js) — реальные цены.</p>
     </div>
     <div class="foot-links">
-      <div class="foot-col"><h5>Продукт</h5><a href="#top">Поиск спреда</a><a href="#how">Как это работает</a><a href="#markets">Площадки</a></div>
-      <div class="foot-col"><h5>Данные</h5><a href="#">Прайс LIS (USD)</a><a href="#">Прайс CS.money (USD)</a><a href="#">Steam priceoverview</a><a href="#">Курс USD→валюта</a></div>
-      <div class="foot-col"><h5>Игры</h5><a href="#">CS2</a><a href="#" style="opacity:.5">Dota 2 · скоро</a><a href="#" style="opacity:.5">Rust · скоро</a></div>
+      <div class="foot-col"><h5>Продукт</h5><a href="#top">Поиск спреда</a><a href="#how">Как это работает</a></div>
+      <div class="foot-col"><h5>Данные</h5><a href="#">Прайс LIS (USD)</a><a href="#">Steam priceoverview</a><a href="#">Курс USD→валюта</a></div>
     </div>
   </div>
   <div class="wrap"><div class="copyright">© 2026 СПРЕД · спред не равен чистому профиту</div></div>
@@ -740,68 +683,65 @@ footer{border-top:1px solid var(--line);padding:40px 0 60px}
 
 <script>
 /* ============================================================
-   ДЕМО-ДАННЫЕ (USD). Формат: [name, wear, lis, csmoney, steam, why?]
+   ДЕМО-ДАННЫЕ (USD). Формат: [name, wear, lis, steam, why?]
    Используются, когда бэкенд не запущен. steam=null → имя не матчится.
    В live-режиме данные приходят с сервера (node server.js).
    ============================================================ */
 const DEMO_SKINS = [
-  ["P250 | Asiimov","Field-Tested",7.2,7.5,6.1],
-  ["MAC-10 | Neon Rider","Field-Tested",6.3,6.6,5.4],
-  ["MP9 | Hot Rod","Factory New",9.4,9.0,7.8],
-  ["UMP-45 | Primal Saber","Factory New",8.7,9.1,7.6],
-  ["Glock-18 | Water Elemental","Minimal Wear",11.8,11.2,9.9],
-  ["Nova | Hyper Beast","Factory New",10.5,10.9,8.9],
-  ["AWP | Atheris","Minimal Wear",16.3,15.9,13.7],
-  ["Five-SeveN | Hyper Beast","Factory New",15.2,14.7,15.9],
-  ["M4A4 | Desolate Space","Field-Tested",18.6,19.2,16.0],
-  ["AWP | Fever Dream","Field-Tested",19.9,20.5,17.3],
-  ["USP-S | The Traitor","Field-Tested",21.0,21.8,18.2],
-  ["AK-47 | Point Disarray","Field-Tested",22.8,23.4,19.6],
-  ["AK-47 | Slate","Factory New",24.2,23.5,20.4],
-  ["Desert Eagle | Mecha Industries","Factory New",27.5,26.8,23.1],
-  ["Galil AR | Chatterbox","Well-Worn",28.4,29.0,25.5],
-  ["M4A1-S | Decimator","Minimal Wear",31.2,30.4,27.0],
-  ["AK-47 | Bloodsport","Field-Tested",78.5,80.1,64.7],
-  ["Desert Eagle | Printstream","Field-Tested",84.0,82.6,68.9],
-  ["AWP | Neo-Noir","Minimal Wear",83.7,85.2,72.8],
-  ["AK-47 | Asiimov","Field-Tested",85.5,83.9,66.2],
-  ["M4A4 | The Emperor","Field-Tested",87.4,85.0,70.5],
-  ["AK-47 | Redline","Field-Tested",86.0,87.2,71.4],
-  ["AWP | Chromatic Aberration","Factory New",86.6,88.1,76.0],
-  ["M4A1-S | Player Two","Factory New",88.2,86.9,80.1],
-  ["M4A1-S | Hyper Beast","Minimal Wear",88.8,90.3,78.2],
-  ["AWP | Asiimov","Well-Worn",90.5,89.1,79.2],
-  ["Glock-18 | Fade","Factory New",90.0,92.5,88.1],
-  ["USP-S | Printstream","Minimal Wear",91.0,89.5,83.4],
-  ["AWP | Wildfire","Field-Tested",95.0,93.5,99.2],
-  ["AK-47 | Vulcan","Minimal Wear",98.4,101.0,84.6],
-  ["StatTrak™ AK-47 | Redline","Field-Tested",120.0,118.5,null,"StatTrak™"],
-  ["★ Gut Knife | Doppler","Factory New",150.9,158.2,null,"символ ★"],
-  ["★ Bayonet | Stained","Field-Tested",191.3,187.0,null,"символ ★"],
-  ["★ M9 Bayonet | Tiger Tooth","Minimal Wear",270.4,265.0,null,"символ ★"],
-  ["★ Karambit | Doppler","Factory New",290.1,305.0,null,"символ ★"],
-  ["★ Sport Gloves | Pandora's Box","Field-Tested",380.0,395.0,null,"символ ★ (перчатки)"],
+  ["P250 | Asiimov","Field-Tested",7.2,6.1],
+  ["MAC-10 | Neon Rider","Field-Tested",6.3,5.4],
+  ["MP9 | Hot Rod","Factory New",9.4,7.8],
+  ["UMP-45 | Primal Saber","Factory New",8.7,7.6],
+  ["Glock-18 | Water Elemental","Minimal Wear",11.8,9.9],
+  ["Nova | Hyper Beast","Factory New",10.5,8.9],
+  ["AWP | Atheris","Minimal Wear",16.3,13.7],
+  ["Five-SeveN | Hyper Beast","Factory New",15.2,15.9],
+  ["M4A4 | Desolate Space","Field-Tested",18.6,16.0],
+  ["AWP | Fever Dream","Field-Tested",19.9,17.3],
+  ["USP-S | The Traitor","Field-Tested",21.0,18.2],
+  ["AK-47 | Point Disarray","Field-Tested",22.8,19.6],
+  ["AK-47 | Slate","Factory New",24.2,20.4],
+  ["Desert Eagle | Mecha Industries","Factory New",27.5,23.1],
+  ["Galil AR | Chatterbox","Well-Worn",28.4,25.5],
+  ["M4A1-S | Decimator","Minimal Wear",31.2,27.0],
+  ["AK-47 | Bloodsport","Field-Tested",78.5,64.7],
+  ["Desert Eagle | Printstream","Field-Tested",84.0,68.9],
+  ["AWP | Neo-Noir","Minimal Wear",83.7,72.8],
+  ["AK-47 | Asiimov","Field-Tested",85.5,66.2],
+  ["M4A4 | The Emperor","Field-Tested",87.4,70.5],
+  ["AK-47 | Redline","Field-Tested",86.0,71.4],
+  ["AWP | Chromatic Aberration","Factory New",86.6,76.0],
+  ["M4A1-S | Player Two","Factory New",88.2,80.1],
+  ["M4A1-S | Hyper Beast","Minimal Wear",88.8,78.2],
+  ["AWP | Asiimov","Well-Worn",90.5,79.2],
+  ["Glock-18 | Fade","Factory New",90.0,88.1],
+  ["USP-S | Printstream","Minimal Wear",91.0,83.4],
+  ["AWP | Wildfire","Field-Tested",95.0,99.2],
+  ["AK-47 | Vulcan","Minimal Wear",98.4,84.6],
+  ["StatTrak\u2122 AK-47 | Redline","Field-Tested",120.0,null,"StatTrak\u2122"],
+  ["\u2605 Gut Knife | Doppler","Factory New",150.9,null,"\u2605"],
+  ["\u2605 Bayonet | Stained","Field-Tested",191.3,null,"\u2605"],
+  ["\u2605 M9 Bayonet | Tiger Tooth","Minimal Wear",270.4,null,"\u2605"],
+  ["\u2605 Karambit | Doppler","Factory New",290.1,null,"\u2605"],
+  ["\u2605 Sport Gloves | Pandora's Box","Field-Tested",380.0,null,"\u2605 (перчатки)"],
 ];
 
 /* ============================================================
    ВАЛЮТЫ
    ============================================================ */
 const CUR = {
-  RUB:{sym:"₽", name:"RUB", rate:92.0, dp:0},
+  RUB:{sym:"\u20BD", name:"RUB", rate:92.0, dp:0},
   USD:{sym:"$", name:"USD", rate:1,    dp:2},
-  EUR:{sym:"€", name:"EUR", rate:0.92, dp:2},
-  KZT:{sym:"₸", name:"KZT", rate:475,  dp:0},
-  UAH:{sym:"₴", name:"UAH", rate:41,   dp:0},
+  EUR:{sym:"\u20AC", name:"EUR", rate:0.92, dp:2},
+  KZT:{sym:"\u20B8", name:"KZT", rate:475,  dp:0},
+  UAH:{sym:"\u20B4", name:"UAH", rate:41,   dp:0},
 };
 let cur = "RUB";
 
 /* ============================================================
-   ПЛОЩАДКИ + ССЫЛКИ
+   ССЫЛКИ
    ============================================================ */
-const EX = {
-  lis:     {label:"LIS",      full:"LIS-Skins", link:n=>`https://lis-skins.com/market/csgo/?query=${encodeURIComponent(n)}`},
-  csmoney: {label:"CS.money", full:"CS.money",  link:n=>`https://cs.money/market/buy/?search=${encodeURIComponent(n)}`},
-};
+const LIS_LINK = n => `https://lis-skins.com/market/csgo/?query=${encodeURIComponent(n)}`;
 const steamLink = mhn => `https://steamcommunity.com/market/listings/730/${encodeURIComponent(mhn)}`;
 const EXT_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 3h6v6m0-6L10 14"/><path d="M19 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5"/></svg>`;
 
@@ -811,11 +751,10 @@ const EXT_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
 const $ = s => document.querySelector(s);
 const fmtNum = (n,dp)=> Number(n).toLocaleString("ru-RU",{minimumFractionDigits:dp,maximumFractionDigits:dp});
 function toCur(usd){ const c=CUR[cur]; return c.sym + " " + fmtNum(usd*c.rate, c.dp); }
-function toCurSigned(usd){ const c=CUR[cur]; const s=usd>=0?"+":"−"; return s+c.sym+" "+fmtNum(Math.abs(usd)*c.rate,c.dp); }
+function toCurSigned(usd){ const c=CUR[cur]; const s=usd>=0?"+":"\u2212"; return s+c.sym+" "+fmtNum(Math.abs(usd)*c.rate,c.dp); }
 function parseAmount(str){ return parseFloat(String(str).replace(/[^\d.,]/g,"").replace(/\s/g,"").replace(",",".")) || 0; }
 const shortName = n => (n.split(" | ")[1] || n);
 
-// детерминированный градиент по имени скина
 function hash(str){ let h=0; for(let i=0;i<str.length;i++){ h=(h<<5)-h+str.charCodeAt(i); h|=0; } return Math.abs(h); }
 function chipStyle(name){
   const h=hash(name);
@@ -827,18 +766,9 @@ const mhnOf = (name,wear)=> wear && !/\(/.test(name) ? `${name} (${wear})` : nam
 /* ============================================================
    СОСТОЯНИЕ
    ============================================================ */
-let sortKey="spread", sortDir=-1, netMode=false, exchange="best";
-let MODE="demo", API_BASE=null, fxSource="фолбэк";
+let sortKey="spread", sortDir=-1, netMode=false;
+let MODE="demo", API_BASE=null, fxSource="\u0444\u043E\u043B\u0431\u044D\u043A";
 let lastResult=null, firstSearch=true;
-
-function chosenPayout(lis, csm, ex){
-  const L=Number.isFinite(lis)?lis:null, C=Number.isFinite(csm)?csm:null;
-  if(ex==="lis")     return L==null?null:{payout:L,ex:"lis"};
-  if(ex==="csmoney") return C==null?null:{payout:C,ex:"csmoney"};
-  if(L==null&&C==null) return null;
-  if(C==null||(L!=null&&L>=C)) return {payout:L,ex:"lis"};
-  return {payout:C,ex:"csmoney"};
-}
 
 /* ============================================================
    РАСЧЁТ — демо (локально)
@@ -849,15 +779,14 @@ function demoCompute(){
   const corr=+$("#corridor").value/100;
   const lo=targetUsd*(1-corr), hi=targetUsd*(1+corr);
   const rows=[], unmatched=[];
-  for(const [name,wear,lis,csm,steam,why] of DEMO_SKINS){
-    const cp=chosenPayout(lis,csm,exchange);
-    if(!cp) continue;
-    if(targetUsd>0 && (cp.payout<lo || cp.payout>hi)) continue;
-    if(steam===null){ unmatched.push({name,wear,why:why||"нет цены в Steam",exchange:cp.ex}); continue; }
-    let spread=cp.payout-steam;
+  for(const [name,wear,lis,steam,why] of DEMO_SKINS){
+    if(!lis) continue;
+    if(targetUsd>0 && (lis<lo || lis>hi)) continue;
+    if(steam===null){ unmatched.push({name,wear,why:why||"нет цены в Steam"}); continue; }
+    let spread=lis-steam;
     if(netMode) spread-=steam*0.15;
     const pct=steam>0?(spread/steam)*100:0;
-    rows.push({name,wear,mhn:mhnOf(name,wear),exchange:cp.ex,lis,csmoney:csm,payout:cp.payout,steam,spread,pct});
+    rows.push({name,wear,mhn:mhnOf(name,wear),lis,payout:lis,steam,spread,pct});
   }
   return {rows,unmatched,lo,hi,candidates:rows.length,warnings:[]};
 }
@@ -868,15 +797,15 @@ function demoCompute(){
 async function liveCompute(){
   const amt=parseAmount($("#amount").value);
   const u=`${API_BASE}/api/search?amount=${encodeURIComponent(amt)}&currency=${cur}`
-        +`&corridor=${$("#corridor").value}&exchange=${exchange}&net=${netMode?1:0}&mode=auto`;
+        +`&corridor=${$("#corridor").value}&net=${netMode?1:0}&mode=auto`;
   const r=await fetch(u);
   if(!r.ok) throw new Error("HTTP "+r.status);
   const j=await r.json();
   if(j.fx && Number.isFinite(j.fx.rate)){ CUR[cur].rate=j.fx.rate; fxSource=j.fx.source; }
   return {
-    rows:j.rows.map(x=>({name:x.name,wear:x.wear,mhn:x.mhn,exchange:x.exchange,
-      lis:x.lis,csmoney:x.csmoney,payout:x.payout,steam:x.steam,spread:x.spread,pct:x.pct})),
-    unmatched:(j.unmatched||[]).map(x=>({name:x.name,wear:x.wear,why:x.why,exchange:x.exchange})),
+    rows:j.rows.map(x=>({name:x.name,wear:x.wear,mhn:x.mhn,
+      lis:x.lis,payout:x.payout,steam:x.steam,spread:x.spread,pct:x.pct})),
+    unmatched:(j.unmatched||[]).map(x=>({name:x.name,wear:x.wear,why:x.why})),
     lo:j.query.corridor.lo, hi:j.query.corridor.hi,
     candidates:j.meta.matched, warnings:j.warnings||[], serverMode:j.mode,
   };
@@ -921,17 +850,15 @@ function render(result, stagger){
   const sorted=sortRows(rowsAll);
   const c=CUR[cur];
 
-  // предупреждения (например, сервер вернул демо-фолбэк)
   const warn=$("#warnBar");
   if(result.warnings && result.warnings.length){
     $("#warnText").textContent=result.warnings.join(" · ");
     warn.classList.add("show");
   } else warn.classList.remove("show");
 
-  // мета
   $("#resMeta").textContent = `${result.candidates} кандидатов · коридор ${toCur(result.lo)} — ${toCur(result.hi)}`;
 
-  // лучшая сделка = максимальный спред (всегда), независимо от сортировки
+  // лучшая сделка
   const best = rowsAll.length ? rowsAll.slice().sort((a,b)=>b.spread-a.spread)[0] : null;
   const bestWrap=$("#bestWrap");
   if(best){
@@ -941,44 +868,31 @@ function render(result, stagger){
     $("#bestWear").textContent = best.wear;
     $("#bestSteam").textContent = toCur(best.steam);
     $("#bestLis").textContent = toCur(best.payout);
-    const em=EX[best.exchange];
-    $("#bestPp").className = "pp "+best.exchange;
-    $("#bestExName").textContent = em.label+" платит";
     const sp=$("#bestSpread"), pc=$("#bestPct");
     const neg=best.spread<0;
     sp.classList.toggle("neg",neg); pc.classList.toggle("neg",neg);
     if(!neg) animateCount(sp, best.spread*c.rate, c.dp, "+"+c.sym+" ");
     else sp.textContent = toCurSigned(best.spread);
     pc.textContent = (best.pct>=0?"+":"")+best.pct.toFixed(1)+"%";
-    // ссылки
     $("#bestSteamLink").href = steamLink(best.mhn);
-    const exl=$("#bestExLink");
-    exl.href = em.link(best.name);
-    exl.className = "lnk "+best.exchange;
-    $("#bestExLinkLabel").textContent = "Открыть на "+em.full;
+    $("#bestLisLink").href = LIS_LINK(best.name);
   } else bestWrap.style.display="none";
 
-  // статтайлы
+  // статтайлы (3 колонки вместо 4)
   const avgPct = rowsAll.length ? rowsAll.reduce((s,r)=>s+r.pct,0)/rowsAll.length : 0;
-  const bestSpreadCur = best ? best.spread*c.rate : 0;
   const fxLabel = MODE==="live" ? ("live · "+fxSource) : "демо · фолбэк";
   $("#stats").innerHTML = `
-    <div class="stat" style="--accent:var(--profit)"><div class="k">Лучший спред</div><div class="v mono">${best?toCurSigned(best.spread):"—"}</div><div class="s">${best?(shortName(best.name)+" · "+EX[best.exchange].label):"—"}</div></div>
-    <div class="stat" style="--accent:var(--steam)"><div class="k">В рейтинге</div><div class="v">${rowsAll.length}</div><div class="s">площадка: ${exchange==="best"?"лучшая":EX[exchange].label}</div></div>
-    <div class="stat" style="--accent:var(--csm)"><div class="k">Курс USD→${c.name}</div><div class="v mono">${fmtNum(c.rate,2)}</div><div class="s">${fxLabel}</div></div>
+    <div class="stat" style="--accent:var(--profit)"><div class="k">Лучший спред</div><div class="v mono">${best?toCurSigned(best.spread):"—"}</div><div class="s">${best?shortName(best.name):"—"}</div></div>
+    <div class="stat" style="--accent:var(--steam)"><div class="k">В рейтинге</div><div class="v">${rowsAll.length}</div><div class="s">LIS-Skins · ${fxLabel}</div></div>
     <div class="stat" style="--accent:var(--gold)"><div class="k">Средний %</div><div class="v mono">${avgPct.toFixed(1)}%</div><div class="s">по кандидатам</div></div>`;
 
-  // максимум для бара (по модулю, чтобы отрицательные тоже были видны)
   const maxSpread = Math.max(...sorted.map(r=>Math.abs(r.spread)), 0.0001);
 
-  // таблица
   const tb=$("#tbody");
   tb.innerHTML = sorted.map((r,i)=>{
     const top = (best && r.mhn===best.mhn);
     const neg = r.spread<0;
     const barW = Math.max(6, (Math.abs(r.spread)/maxSpread)*100);
-    const em = EX[r.exchange];
-    const exCol = r.exchange==="lis" ? "var(--lis)" : "var(--csm)";
     return `<tr class="${stagger?'reveal':''}" style="${stagger?`animation-delay:${Math.min(i*45,500)}ms`:''}">
       <td class="rank ${top?'top':''}">${top?'★':i+1}</td>
       <td>
@@ -987,17 +901,16 @@ function render(result, stagger){
           <div><div class="name">${r.name}</div><span class="wear">${r.wear}</span></div>
         </div>
       </td>
-      <td><span class="ex-badge ${r.exchange}"><span class="d"></span>${em.label}</span></td>
-      <td class="num"><span style="color:${exCol};font-weight:600">${toCur(r.payout)}</span></td>
+      <td class="num"><span class="lis-c">${toCur(r.payout)}</span></td>
       <td class="num steam-c">${toCur(r.steam)}</td>
       <td class="num"><span class="spread-c ${neg?'neg':''}">${toCurSigned(r.spread)}</span><br><span class="bar"><i class="${neg?'neg':''}" style="width:${barW}%"></i></span></td>
       <td class="num"><span class="pct-pill ${neg?'neg':''}">${(r.pct>=0?'+':'')}${r.pct.toFixed(1)}%</span></td>
       <td><span class="row-link">
         <a class="s" href="${steamLink(r.mhn)}" target="_blank" rel="noopener" title="Steam">${EXT_SVG}</a>
-        <a class="${r.exchange==='lis'?'l':'c'}" href="${em.link(r.name)}" target="_blank" rel="noopener" title="${em.full}">${EXT_SVG}</a>
+        <a class="l" href="${LIS_LINK(r.name)}" target="_blank" rel="noopener" title="LIS-Skins">${EXT_SVG}</a>
       </span></td>
     </tr>`;
-  }).join("") || `<tr><td colspan="8" style="text-align:center;color:var(--faint);padding:40px">Нет кандидатов в этом коридоре — расширь диапазон ползунком.</td></tr>`;
+  }).join("") || `<tr><td colspan="7" style="text-align:center;color:var(--faint);padding:40px">Нет кандидатов в этом коридоре — расширь диапазон ползунком.</td></tr>`;
 
   // не вошли
   $("#umList").innerHTML = result.unmatched.map(u=>`
@@ -1012,7 +925,7 @@ function render(result, stagger){
     th.classList.toggle("active",active);
     th.querySelector(".sort").textContent = active ? (sortDir<0?"↓":"↑") : "↕";
   });
-  const labels={spread:"спред",payout:"выплата",steam:"Steam",pct:"%",name:"имя"};
+  const labels={spread:"спред",payout:"LIS платит",steam:"Steam",pct:"%",name:"имя",lis:"LIS"};
   $("#sortHint").textContent = `сортировка: ${labels[sortKey]} ${sortDir<0?"↓":"↑"}`;
 }
 
@@ -1034,7 +947,7 @@ async function runSearch(){
   if(!reduce){ btn.classList.add("loading"); wrap.classList.add("scanning"); }
   const started=performance.now();
   const result = await computeResult();
-  if(token!==searchToken) return; // устаревший запрос
+  if(token!==searchToken) return;
   const elapsed=performance.now()-started;
   const minMs = MODE==="live" ? 0 : 650;
   if(!reduce && elapsed<minMs) await new Promise(r=>setTimeout(r,minMs-elapsed));
@@ -1047,17 +960,17 @@ function scrollToResults(){
 }
 
 /* ============================================================
-   ПОДСКАЗКИ КОРИДОРА / USD
+   ПОДСКАЗКИ КОРРИДОРА / USD
    ============================================================ */
 function updateHints(){
   const amt = parseAmount($("#amount").value);
   const usd = amt / CUR[cur].rate;
-  $("#usdHint").textContent = "≈ $" + usd.toFixed(2);
+  $("#usdHint").textContent = "\u2248 $" + usd.toFixed(2);
   const corr=+$("#corridor").value/100;
   const lo=amt*(1-corr), hi=amt*(1+corr);
   const c=CUR[cur];
   $("#band").textContent = `${fmtNum(lo,c.dp)} ${c.sym} — ${fmtNum(hi,c.dp)} ${c.sym}`;
-  $("#corVal").textContent = "±"+$("#corridor").value+"%";
+  $("#corVal").textContent = "\u00B1"+$("#corridor").value+"%";
   const p=( (+$("#corridor").value-1)/14 )*100;
   $("#corridor").style.setProperty("--p", p+"%");
 }
@@ -1076,7 +989,7 @@ async function detectBackend(){
       const r=await fetch(base+"/api/health",{signal:ctrl.signal});
       clearTimeout(t);
       if(r.ok){ const j=await r.json(); if(j&&j.ok){ API_BASE=base; return j; } }
-    }catch(_){ /* нет сервера на этом адресе */ }
+    }catch(_){}
   }
   return null;
 }
@@ -1112,15 +1025,6 @@ $("#goBtn").addEventListener("click", runSearch);
 $("#amount").addEventListener("keydown", e=>{ if(e.key==="Enter") runSearch(); });
 
 $("#netToggle").addEventListener("change", e=>{ netMode=e.target.checked; refresh(false); });
-
-// сегмент площадки
-document.querySelectorAll("#exSeg button").forEach(b=>{
-  b.addEventListener("click", ()=>{
-    exchange=b.dataset.ex;
-    document.querySelectorAll("#exSeg button").forEach(x=>x.classList.toggle("active", x===b));
-    refresh(false);
-  });
-});
 
 // сортировка (клиентская — без перезапроса)
 document.querySelectorAll("thead th[data-sort]").forEach(th=>{
