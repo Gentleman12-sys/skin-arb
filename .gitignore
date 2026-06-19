@@ -1,0 +1,12 @@
+# Дисковый кэш цен (LIS/CS.money/Steam/курсы)
+.cache/
+
+# Реальные прайс-листы пользователя (скачанные из аккаунта) — не коммитим.
+# Сервер подхватывает их автоматически; в репозитории — только *.example.json.
+data/lis_prices.json
+data/csmoney_prices.json
+
+# Прочее
+node_modules/
+*.log
+.DS_Store

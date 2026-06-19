@@ -928,6 +928,9 @@ function render(result, stagger){
     warn.classList.add("show");
   } else warn.classList.remove("show");
 
+  // честный бейдж: если бэкенд жив, но отдал демо — так и покажем
+  if(MODE==="live" && result.serverMode) setDataBadge(result.serverMode);
+
   // мета
   $("#resMeta").textContent = `${result.candidates} кандидатов · коридор ${toCur(result.lo)} — ${toCur(result.hi)}`;
 
@@ -1095,6 +1098,20 @@ function updateBadge(temp){
   if(temp){ b.innerHTML='<span class="pip"></span>'+temp; return; }
   if(MODE==="live"){ b.classList.add("live"); b.innerHTML='<span class="pip"></span>live · реальные цены'; b.title="Цены с локального бэкенда"; }
   else { b.classList.remove("live"); b.innerHTML='<span class="pip"></span>demo · мок-данные'; b.title="Бэкенд не найден — демо-данные"; }
+}
+// Бейдж по фактическому режиму СЕРВЕРА: бэкенд может быть запущен, но при
+// недоступном прайсе LIS вернуть демо-данные — это должно быть честно видно.
+function setDataBadge(serverMode){
+  const b=$("#modeBadge");
+  if(serverMode==="demo"){
+    b.classList.remove("live");
+    b.innerHTML='<span class="pip"></span>demo · сервер без прайса';
+    b.title="Бэкенд запущен, но прайс-лист LIS недоступен — показаны демо-данные. См. предупреждение ниже и README.";
+  } else {
+    b.classList.add("live");
+    b.innerHTML='<span class="pip"></span>live · реальные цены';
+    b.title="Цены с локального бэкенда";
+  }
 }
 
 /* ============================================================

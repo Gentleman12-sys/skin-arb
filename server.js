@@ -49,16 +49,22 @@ const CFG = {
   fxTtl: int(process.env.FX_TTL, 6 * 3600) * 1000,
 
   // LIS-Skins. Приоритет: локальный файл → API по токену → bulk-JSON по ссылке.
-  lisPricesFile: process.env.LIS_PRICES_FILE || '',
+  // Если LIS_PRICES_FILE не задан, но рядом лежит data/lis_prices.json —
+  // используем его автоматически (самый надёжный путь, не зависит от антибота).
+  lisPricesFile: process.env.LIS_PRICES_FILE ||
+    firstExisting([path.join(ROOT, 'data', 'lis_prices.json')]),
   lisApiBase: process.env.LIS_API_BASE || 'https://api.lis-skins.com/v1',
   lisApiToken: process.env.LIS_API_TOKEN || '',
   lisBulkUrl: process.env.LIS_BULK_URL || 'https://lis-skins.com/market_export_json/api_csgo_full.json',
 
-  // CS.money. Локальный файл или JSON-эндпоинт прайса.
-  csmoneyPricesFile: process.env.CSMONEY_PRICES_FILE || '',
+  // CS.money. Локальный файл (или data/csmoney_prices.json) или JSON-эндпоинт.
+  csmoneyPricesFile: process.env.CSMONEY_PRICES_FILE ||
+    firstExisting([path.join(ROOT, 'data', 'csmoney_prices.json')]),
   csmoneyUrl: process.env.CSMONEY_URL || '',
 
   pricesTtl: int(process.env.PRICES_TTL, 30 * 60) * 1000,
+  // Прайс-лист может быть большим — даём ему отдельный, увеличенный таймаут.
+  pricesTimeout: int(process.env.PRICES_TIMEOUT, 30000),
 
   // Steam priceoverview: appid 730 (CS2), currency=1 (USD).
   steamTtl: int(process.env.STEAM_TTL, 6 * 3600) * 1000,
@@ -73,8 +79,12 @@ const CFG = {
   defaultMode: (process.env.MODE || 'auto').toLowerCase(),
 
   httpTimeout: int(process.env.HTTP_TIMEOUT, 12000),
+  // Реалистичный браузерный User-Agent: LIS/Steam за Cloudflare часто отвечают
+  // 403 на «ботовые» UA. Переопределяется переменной USER_AGENT.
   userAgent: process.env.USER_AGENT ||
-    'Mozilla/5.0 (compatible; SpreadArbBot/1.0; +https://localhost)',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+    '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  acceptLanguage: process.env.ACCEPT_LANGUAGE || 'en-US,en;q=0.9,ru;q=0.8',
   quiet: process.env.QUIET === '1',
 };
 
@@ -92,6 +102,11 @@ const WEARS = ['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn', 'Batt
  * ========================================================================== */
 function int(v, d) { const n = parseInt(v, 10); return Number.isFinite(n) ? n : d; }
 function float(v, d) { const n = parseFloat(v); return Number.isFinite(n) ? n : d; }
+// Первый существующий файл из списка (для авто-подхвата data/lis_prices.json).
+function firstExisting(paths) {
+  for (const p of paths) { try { if (p && fs.statSync(p).isFile()) return p; } catch (_) { /* нет */ } }
+  return '';
+}
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 function log(...a) { if (!CFG.quiet) console.error(...a); }
 
@@ -140,6 +155,7 @@ function httpGet(urlStr, opts = {}) {
         headers: {
           'User-Agent': CFG.userAgent,
           'Accept': 'application/json,text/plain,*/*',
+          'Accept-Language': CFG.acceptLanguage,
           'Accept-Encoding': 'gzip, deflate',
           ...headers,
         },
@@ -341,7 +357,7 @@ function parsePriceList(raw) {
       if (!it || typeof it !== 'object') continue;
       const name = normName(pickField(it, NAME_FIELDS));
       const price = parseMoney(pickField(it, PRICE_FIELDS));
-      if (name && price != null && price > 0) keepMax(map, name, price);
+      if (name && price != null && price > 0) keepCheapest(map, name, price);
     }
   } else if (data && typeof data === 'object') {
     for (const [k, v] of Object.entries(data)) {
@@ -349,14 +365,20 @@ function parsePriceList(raw) {
       let price = null;
       if (typeof v === 'number' || typeof v === 'string') price = parseMoney(v);
       else if (v && typeof v === 'object') price = parseMoney(pickField(v, PRICE_FIELDS));
-      if (name && price != null && price > 0) keepMax(map, name, price);
+      if (name && price != null && price > 0) keepCheapest(map, name, price);
     }
   }
   return map;
 }
-function keepMax(map, name, price) {
+// Bulk-экспорт LIS — это МИЛЛИОНЫ отдельных листингов продавцов: на один
+// market_hash_name приходятся десятки цен (разный float, наклейки, наценки).
+// Рыночная цена скина = САМЫЙ ДЕШЁВЫЙ листинг (lowest ask): именно за столько его
+// реально можно купить, и именно он соответствует цене чистого предмета в Steam.
+// Брать максимум нельзя — это поймает экземпляр с дорогими наклейками или просто
+// чью-то заведомо завышенную цену (баг с «Zeus за 1247₽» при реальных ~46₽).
+function keepCheapest(map, name, price) {
   const prev = map.get(name);
-  if (prev == null || price > prev) map.set(name, price);
+  if (prev == null || price < prev) map.set(name, price);
 }
 
 async function loadPriceFileOrUrl(file, url, headers) {
@@ -365,17 +387,50 @@ async function loadPriceFileOrUrl(file, url, headers) {
     return { map: parsePriceList(raw), source: 'file:' + path.basename(file) };
   }
   if (url) {
-    const raw = await httpGetJson(url, { headers, retries: 2 });
+    const raw = await httpGetJson(url, { headers, retries: 2, timeout: CFG.pricesTimeout });
     return { map: parsePriceList(raw), source: hostOf(url) };
   }
   return { map: new Map(), source: 'none' };
 }
 
+// Помечает результат загрузки прайса понятной ошибкой, если данных не пришло.
+// 'none'/'skipped' — это «не настроено», а не ошибка, их не трогаем.
+function flagEmpty(res, label) {
+  if (res.map.size || res.source === 'none' || res.source === 'skipped') return res;
+  res.error = res.error || `${label}: источник ${res.source} вернул 0 позиций — проверь формат/доступ`;
+  return res;
+}
+
 /* ============================================================================
  * АДАПТЕРЫ ПЛОЩАДОК (выплата за скин, USD) → Map<mhn, usd>
  * ========================================================================== */
+// Подсказка по типичным ошибкам прямого доступа к LIS (антибот/токен).
+function lisErrorHint(e) {
+  if (e.statusCode === 403) {
+    return 'HTTP 403 — LIS отклонил запрос (антибот/Cloudflare). Самый надёжный путь: ' +
+      'скачай прайс из залогиненного аккаунта в data/lis_prices.json (см. README).';
+  }
+  if (e.statusCode === 401) return 'HTTP 401 — неверный/просроченный LIS_API_TOKEN.';
+  if (e.statusCode === 429) return 'HTTP 429 — LIS лимитирует запросы, попробуй позже.';
+  return e.message;
+}
+
+// Ключ кэша зависит от конкретного источника — иначе после смены источника
+// (файл → bulk и т.п.) сервер до 30 минут отдавал бы чужие данные из кэша.
+function lisSourceTag() {
+  if (CFG.lisPricesFile) return 'file:' + CFG.lisPricesFile;
+  if (CFG.lisApiToken) return 'api:' + CFG.lisApiBase;
+  return 'bulk:' + CFG.lisBulkUrl;
+}
+function csmoneySourceTag() {
+  if (CFG.csmoneyPricesFile) return 'file:' + CFG.csmoneyPricesFile;
+  if (CFG.csmoneyUrl) return 'url:' + CFG.csmoneyUrl;
+  return 'none';
+}
+
 async function getLisPrices() {
-  const cached = cacheGet('prices:lis', CFG.pricesTtl);
+  const ckey = 'prices:lis:' + lisSourceTag();
+  const cached = cacheGet(ckey, CFG.pricesTtl);
   if (cached) return { map: new Map(cached.entries), source: cached.source };
   try {
     let res;
@@ -383,24 +438,30 @@ async function getLisPrices() {
       res = await loadPriceFileOrUrl(CFG.lisPricesFile, '');
     } else if (CFG.lisApiToken) {
       const url = CFG.lisApiBase.replace(/\/$/, '') + '/market/prices';
-      res = await loadPriceFileOrUrl('', url, { Authorization: 'Bearer ' + CFG.lisApiToken });
+      res = await loadPriceFileOrUrl('', url, {
+        Authorization: 'Bearer ' + CFG.lisApiToken, Referer: 'https://lis-skins.com/',
+      });
     } else {
-      res = await loadPriceFileOrUrl('', CFG.lisBulkUrl);
+      res = await loadPriceFileOrUrl('', CFG.lisBulkUrl, { Referer: 'https://lis-skins.com/' });
     }
-    if (res.map.size) cacheSet('prices:lis', { entries: [...res.map], source: res.source });
+    flagEmpty(res, 'LIS');
+    if (res.map.size) cacheSet(ckey, { entries: [...res.map], source: res.source });
     return res;
   } catch (e) {
-    log('LIS prices failed:', e.message);
-    return { map: new Map(), source: 'error', error: e.message };
+    const hint = lisErrorHint(e);
+    log('LIS prices failed:', hint);
+    return { map: new Map(), source: 'error', error: hint };
   }
 }
 
 async function getCsMoneyPrices() {
-  const cached = cacheGet('prices:csmoney', CFG.pricesTtl);
+  const ckey = 'prices:csmoney:' + csmoneySourceTag();
+  const cached = cacheGet(ckey, CFG.pricesTtl);
   if (cached) return { map: new Map(cached.entries), source: cached.source };
   try {
     const res = await loadPriceFileOrUrl(CFG.csmoneyPricesFile, CFG.csmoneyUrl);
-    if (res.map.size) cacheSet('prices:csmoney', { entries: [...res.map], source: res.source });
+    flagEmpty(res, 'CS.money');
+    if (res.map.size) cacheSet(ckey, { entries: [...res.map], source: res.source });
     return res;
   } catch (e) {
     log('CS.money prices failed:', e.message);
@@ -485,7 +546,10 @@ async function runSearch(params) {
     const live = await liveTable(exchange);
     const usable = live.rows.some((r) => chosenPayout(r, exchange));
     if (!usable && mode === 'auto') {
-      warnings.push('Реальные прайс-листы недоступны/пусты — показываю демо-данные. См. README, как подключить источники.');
+      const why = live.lisErr ? 'LIS: ' + live.lisErr
+        : live.csmErr ? 'CS.money: ' + live.csmErr
+        : 'источники вернули пустой прайс-лист';
+      warnings.push('Реальные цены недоступны — показываю демо-данные. Причина → ' + why);
       table = demoTable(); sources = { lis: 'demo', csmoney: 'demo' }; usedMode = 'demo';
     } else {
       table = live.rows; sources = live.sources; usedMode = 'live';
@@ -506,15 +570,16 @@ async function runSearch(params) {
 
   // Цены Steam по кандидатам (демо — из набора, live — точечные запросы с лимитом)
   const matched = [], unmatched = [];
-  let freshLookups = 0;
+  let freshLookups = 0, steamErrors = 0;
   for (const c of candidates) {
-    let steam = c.steam, steamSource = 'demo';
+    let steam = c.steam, steamSource = 'demo', steamError = null;
     if (usedMode === 'live') {
       const cachedHit = cacheGet('steam:' + c.mhn, CFG.steamTtl);
       if (cachedHit !== undefined) { steam = cachedHit.price; steamSource = 'cache'; }
       else if (freshLookups < CFG.steamMaxLookups) {
         const sp = await getSteamPrice(c.mhn);
-        steam = sp.price; steamSource = sp.source; freshLookups++;
+        steam = sp.price; steamSource = sp.source; steamError = sp.error; freshLookups++;
+        if (sp.source === 'error') steamErrors++;
       } else {
         unmatched.push({ name: c.name, wear: c.wear, mhn: c.mhn, exchange: c.exchange,
           payout: c.payout, why: 'лимит Steam — повтори поиск, дозапросим' });
@@ -522,8 +587,13 @@ async function runSearch(params) {
       }
     }
     if (steam == null) {
+      // Различаем «Steam не вернул цену» (несовпадение имени) и «запрос упал»
+      // (403/429/таймаут) — иначе пользователь чинит не ту проблему.
+      const why = steamSource === 'error'
+        ? 'ошибка Steam: ' + (steamError || 'запрос не прошёл')
+        : (c.why || 'нет цены в Steam (имя ≠ market_hash_name: ★, StatTrak™)');
       unmatched.push({ name: c.name, wear: c.wear, mhn: c.mhn, exchange: c.exchange,
-        payout: c.payout, why: c.why || 'нет цены в Steam (имя ≠ market_hash_name)' });
+        payout: c.payout, why });
       continue;
     }
     let spread = c.payout - steam;
@@ -539,6 +609,13 @@ async function runSearch(params) {
   }
   matched.sort((a, b) => b.spread - a.spread);
   const best = matched.length ? matched.reduce((m, r) => (r.spread > m.spread ? r : m), matched[0]) : null;
+
+  // Если Steam сыпал ошибками (особенно когда ни одного скина не сматчилось) —
+  // выносим это в общий warning, чтобы причина пустого результата была очевидна.
+  if (steamErrors > 0) {
+    warnings.push(`Steam не ответил по ${steamErrors} скин(ам) (403/429/таймаут) — ` +
+      'часть цен не получена, повтори поиск позже (кэш дозаполнится).');
+  }
 
   return {
     ok: true, version: VERSION,
@@ -581,9 +658,11 @@ async function handleApi(pathname, q, res) {
       ok: true, version: VERSION, mode: CFG.defaultMode,
       exchanges: {
         lis: { configured: !!(CFG.lisPricesFile || CFG.lisApiToken || CFG.lisBulkUrl),
-          source: CFG.lisPricesFile ? 'file' : CFG.lisApiToken ? 'api' : 'bulk' },
+          source: CFG.lisPricesFile ? 'file' : CFG.lisApiToken ? 'api' : 'bulk',
+          file: CFG.lisPricesFile || null },
         csmoney: { configured: !!(CFG.csmoneyPricesFile || CFG.csmoneyUrl),
-          source: CFG.csmoneyPricesFile ? 'file' : CFG.csmoneyUrl ? 'url' : 'demo-only' },
+          source: CFG.csmoneyPricesFile ? 'file' : CFG.csmoneyUrl ? 'url' : 'demo-only',
+          file: CFG.csmoneyPricesFile || null },
       },
       steam: { delayMs: CFG.steamDelayMs, maxLookups: CFG.steamMaxLookups },
       demoSkins: (DEMO.skins || []).length,
@@ -650,11 +729,20 @@ function startServer(port) {
     serveStatic(pathname, res);
   });
   server.listen(port, () => {
+    const rel = (p) => path.relative(ROOT, p) || p;
+    const lisSrc = CFG.lisPricesFile ? 'файл ' + rel(CFG.lisPricesFile)
+      : CFG.lisApiToken ? 'API-токен' : 'bulk-URL (публичный)';
+    const csmSrc = CFG.csmoneyPricesFile ? 'файл ' + rel(CFG.csmoneyPricesFile)
+      : CFG.csmoneyUrl ? 'URL' : 'не настроен → демо';
     console.log(`\n  СПРЕД v${VERSION} — сервер запущен`);
     console.log(`  → http://localhost:${port}`);
     console.log(`  Режим по умолчанию: ${CFG.defaultMode}`);
-    console.log(`  LIS: ${CFG.lisPricesFile ? 'файл' : CFG.lisApiToken ? 'API-токен' : 'bulk-URL'}` +
-      ` · CS.money: ${CFG.csmoneyPricesFile ? 'файл' : CFG.csmoneyUrl ? 'URL' : 'демо'}\n`);
+    console.log(`  LIS: ${lisSrc} · CS.money: ${csmSrc}`);
+    if (!CFG.lisPricesFile && !CFG.lisApiToken) {
+      console.log('  ⓘ LIS на публичном bulk-URL — возможен HTTP 403 (антибот Cloudflare).');
+      console.log('    Надёжнее: положи прайс в data/lis_prices.json (см. README) или задай LIS_API_TOKEN.');
+    }
+    console.log('');
   });
   return server;
 }
