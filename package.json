@@ -1,0 +1,21 @@
+{
+  "name": "spread-skin-arbitrage",
+  "version": "1.0.0",
+  "description": "СПРЕД — арбитраж скинов CS2: сверка цен Steam ↔ LIS-Skins / CS.money для выгодного вывода денег со скинов. Бэкенд без зависимостей + одностраничный интерфейс.",
+  "main": "server.js",
+  "type": "commonjs",
+  "bin": {
+    "spread": "server.js"
+  },
+  "scripts": {
+    "start": "node server.js serve",
+    "search": "node server.js search",
+    "fx": "node server.js fx",
+    "diag": "node server.js diag"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "keywords": ["cs2", "csgo", "skins", "arbitrage", "steam", "lis-skins", "cs.money", "spread"],
+  "license": "MIT"
+}
