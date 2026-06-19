@@ -56,11 +56,15 @@ const CFG = {
   lisApiBase: process.env.LIS_API_BASE || 'https://api.lis-skins.com/v1',
   lisApiToken: process.env.LIS_API_TOKEN || '',
   lisBulkUrl: process.env.LIS_BULK_URL || 'https://lis-skins.com/market_export_json/api_csgo_full.json',
+  // В какой валюте цены в источнике LIS. Публичный bulk — в USD. Если положишь
+  // прайс в рублях (из своего аккаунта) — поставь RUB, и тогда курс не применяется.
+  lisPriceCurrency: (process.env.LIS_PRICE_CURRENCY || 'USD').toUpperCase(),
 
   // CS.money. Локальный файл (или data/csmoney_prices.json) или JSON-эндпоинт.
   csmoneyPricesFile: process.env.CSMONEY_PRICES_FILE ||
     firstExisting([path.join(ROOT, 'data', 'csmoney_prices.json')]),
   csmoneyUrl: process.env.CSMONEY_URL || '',
+  csmoneyPriceCurrency: (process.env.CSMONEY_PRICE_CURRENCY || 'USD').toUpperCase(),
 
   pricesTtl: int(process.env.PRICES_TTL, 30 * 60) * 1000,
   // Прайс-лист может быть большим — даём ему отдельный, увеличенный таймаут.
@@ -96,6 +100,13 @@ const LINKS = {
 };
 
 const WEARS = ['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn', 'Battle-Scarred'];
+
+// Коды валют Steam priceoverview (параметр currency). Спрашиваем цену сразу в
+// валюте пользователя — у Steam региональные цены, и USD×курс ≠ рублёвый рынок.
+const STEAM_CURRENCY = {
+  USD: 1, GBP: 2, EUR: 3, CHF: 4, RUB: 5, PLN: 6, BRL: 7, JPY: 8, CNY: 23,
+  UAH: 18, TRY: 17, KZT: 37, INR: 24, CAD: 20, AUD: 21, KRW: 16,
+};
 
 /* ============================================================================
  * МЕЛКИЕ УТИЛИТЫ
@@ -297,9 +308,10 @@ function enqueueSteam(fn) {
   return run;
 }
 
-// Возвращает { price:number|null, source, error? }. null = цены в Steam нет.
-async function getSteamPrice(mhn) {
-  const key = 'steam:' + mhn;
+// Возвращает { price:number|null, source, error? } — цена в валюте curCode.
+// curCode — код валюты Steam (1=USD, 5=RUB, …). null = цены в Steam нет.
+async function getSteamPrice(mhn, curCode = 1) {
+  const key = 'steam:' + curCode + ':' + mhn;
   const cached = cacheGet(key, CFG.steamTtl);
   if (cached !== undefined) return Object.assign({ source: 'cache' }, cached);
 
@@ -307,7 +319,7 @@ async function getSteamPrice(mhn) {
   for (let attempt = 0; attempt <= CFG.steamRetries; attempt++) {
     try {
       const out = await enqueueSteam(async () => {
-        const url = 'https://steamcommunity.com/market/priceoverview/?appid=730&currency=1'
+        const url = 'https://steamcommunity.com/market/priceoverview/?appid=730&currency=' + curCode
           + '&market_hash_name=' + encodeURIComponent(mhn);
         const data = await httpGetJson(url, { retries: 0, timeout: CFG.httpTimeout });
         if (!data || data.success !== true) return { price: null };
@@ -532,6 +544,11 @@ async function runSearch(params) {
 
   const fx = await getFx();
   const rate = resolveRate(fx, currency);
+  // Steam спрашиваем сразу в валюте пользователя (свой код валюты). Если кода нет,
+  // откатываемся на USD и переводим курсом (steamNative=false).
+  const steamCode = STEAM_CURRENCY[currency] || 1;
+  const steamNative = !!STEAM_CURRENCY[currency];
+  // Всё внутри считаем в USD-эквиваленте, поэтому target/коридор — в USD.
   const targetUsd = amount > 0 ? amount / rate : 0;
   const corr = corridorPct / 100;
   const lo = targetUsd * (1 - corr);
@@ -553,6 +570,18 @@ async function runSearch(params) {
       table = demoTable(); sources = { lis: 'demo', csmoney: 'demo' }; usedMode = 'demo';
     } else {
       table = live.rows; sources = live.sources; usedMode = 'live';
+      // Приводим цены площадок к USD-эквиваленту по валюте источника.
+      // Для USD-источника множитель = 1 (никакого курса). Для рублёвого прайса
+      // (LIS_PRICE_CURRENCY=RUB) делим на курс — тогда на показе он умножится
+      // обратно и совпадёт ровно с твоим файлом (без потерь на курсе).
+      const lisToUsd = 1 / resolveRate(fx, CFG.lisPriceCurrency);
+      const csmToUsd = 1 / resolveRate(fx, CFG.csmoneyPriceCurrency);
+      if (lisToUsd !== 1 || csmToUsd !== 1) {
+        for (const r of table) {
+          if (Number.isFinite(r.lis)) r.lis *= lisToUsd;
+          if (Number.isFinite(r.csmoney)) r.csmoney *= csmToUsd;
+        }
+      }
       if (live.lisErr) warnings.push('LIS: ' + live.lisErr);
       if (live.csmErr) warnings.push('CS.money: ' + live.csmErr);
     }
@@ -574,11 +603,14 @@ async function runSearch(params) {
   for (const c of candidates) {
     let steam = c.steam, steamSource = 'demo', steamError = null;
     if (usedMode === 'live') {
-      const cachedHit = cacheGet('steam:' + c.mhn, CFG.steamTtl);
-      if (cachedHit !== undefined) { steam = cachedHit.price; steamSource = 'cache'; }
+      // Цена приходит в валюте пользователя; в USD-эквивалент переводим только
+      // если спрашивали нативно (steamNative) — иначе она уже в USD.
+      const toUsd = (p) => (p == null ? null : (steamNative ? p / rate : p));
+      const cachedHit = cacheGet('steam:' + steamCode + ':' + c.mhn, CFG.steamTtl);
+      if (cachedHit !== undefined) { steam = toUsd(cachedHit.price); steamSource = 'cache'; }
       else if (freshLookups < CFG.steamMaxLookups) {
-        const sp = await getSteamPrice(c.mhn);
-        steam = sp.price; steamSource = sp.source; steamError = sp.error; freshLookups++;
+        const sp = await getSteamPrice(c.mhn, steamCode);
+        steam = toUsd(sp.price); steamSource = sp.source; steamError = sp.error; freshLookups++;
         if (sp.source === 'error') steamErrors++;
       } else {
         unmatched.push({ name: c.name, wear: c.wear, mhn: c.mhn, exchange: c.exchange,
@@ -675,8 +707,11 @@ async function handleApi(pathname, q, res) {
   if (pathname === '/api/steam') {
     const name = normName(q.get('name'));
     if (!name) return sendJson(res, 400, { ok: false, error: 'name required' });
-    const sp = await getSteamPrice(name);
-    return sendJson(res, 200, { ok: true, name, price: sp.price, source: sp.source, error: sp.error });
+    const cur = String(q.get('currency') || 'USD').toUpperCase();
+    const code = STEAM_CURRENCY[cur] || 1;
+    const sp = await getSteamPrice(name, code);
+    return sendJson(res, 200, { ok: true, name, currency: STEAM_CURRENCY[cur] ? cur : 'USD',
+      price: sp.price, source: sp.source, error: sp.error });
   }
   if (pathname === '/api/prices') {
     const ex = q.get('exchange') === 'csmoney' ? 'csmoney' : 'lis';
@@ -834,8 +869,11 @@ async function cliFx() {
 async function cliSteam(args) {
   const name = normName(args._.join(' '));
   if (!name) { console.error('Укажи имя: node server.js steam "AK-47 | Asiimov (Field-Tested)"'); process.exit(1); }
-  const sp = await getSteamPrice(name);
-  console.log(`${name}: ${sp.price == null ? 'нет цены' : '$' + sp.price} (${sp.source})${sp.error ? ' — ' + sp.error : ''}`);
+  const cur = (args.currency || 'USD').toUpperCase();
+  const code = STEAM_CURRENCY[cur] || 1;
+  const used = STEAM_CURRENCY[cur] ? cur : 'USD';
+  const sp = await getSteamPrice(name, code);
+  console.log(`${name}: ${sp.price == null ? 'нет цены' : sp.price + ' ' + used} (${sp.source})${sp.error ? ' — ' + sp.error : ''}`);
 }
 
 async function cliDiag(args) {
