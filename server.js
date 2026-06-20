@@ -33,6 +33,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { URL } = require('url');
+const { StringDecoder } = require('string_decoder');
 
 const VERSION = '1.0.0';
 const ROOT = __dirname;
@@ -355,6 +356,14 @@ function pickField(obj, fields) {
   return undefined;
 }
 
+// Достаёт имя+цену из одного объекта-листинга и кладёт самую дешёвую в Map.
+function addItem(map, it) {
+  if (!it || typeof it !== 'object') return;
+  const name = normName(pickField(it, NAME_FIELDS));
+  const price = parseMoney(pickField(it, PRICE_FIELDS));
+  if (name && price != null && price > 0) keepCheapest(map, name, price);
+}
+
 function parsePriceList(raw) {
   const map = new Map();
   let data = raw;
@@ -365,12 +374,7 @@ function parsePriceList(raw) {
     else if (Array.isArray(data.result)) data = data.result;
   }
   if (Array.isArray(data)) {
-    for (const it of data) {
-      if (!it || typeof it !== 'object') continue;
-      const name = normName(pickField(it, NAME_FIELDS));
-      const price = parseMoney(pickField(it, PRICE_FIELDS));
-      if (name && price != null && price > 0) keepCheapest(map, name, price);
-    }
+    for (const it of data) addItem(map, it);
   } else if (data && typeof data === 'object') {
     for (const [k, v] of Object.entries(data)) {
       const name = normName(k);
@@ -393,12 +397,122 @@ function keepCheapest(map, name, price) {
   if (prev == null || price < prev) map.set(name, price);
 }
 
-async function loadPriceFileOrUrl(file, url, headers) {
+/* ============================================================================
+ * ПОТОКОВЫЙ ПАРСЕР БОЛЬШИХ ПРАЙСОВ
+ * Bulk LIS — сотни МБ: целиком в строку не влезает (V8 лимит ~512 МБ,
+ * ERR_STRING_TOO_LONG). Читаем поток кусками и достаём объекты массива по одному
+ * простым конечным автоматом (учитывает строки/экранирование/вложенность).
+ * ========================================================================== */
+function streamExtractItems(readable, onItem) {
+  return new Promise((resolve, reject) => {
+    const dec = new StringDecoder('utf8');
+    const MAXBUF = 8 * 1024 * 1024;  // защита от разрастания одного объекта
+    let count = 0, finished = false;
+    let inArray = false, depth = 0, inString = false, escape = false, buf = '';
+    let preStr = false, preEsc = false;
+
+    const done = (fn) => { if (!finished) { finished = true; try { readable.destroy(); } catch (_) {} fn(); } };
+
+    function feed(text) {
+      let i = 0; const n = text.length;
+      if (!inArray) {                                  // преамбула: ищем первый '['
+        for (; i < n; i++) {
+          const c = text[i];
+          if (preStr) { if (preEsc) preEsc = false; else if (c === '\\') preEsc = true; else if (c === '"') preStr = false; }
+          else if (c === '"') preStr = true;
+          else if (c === '[') { inArray = true; i++; break; }
+        }
+        if (!inArray) return;
+      }
+      for (; i < n; i++) {
+        const c = text[i];
+        if (depth === 0) {
+          if (c === '{') { depth = 1; buf = '{'; }
+          else if (c === ']') { done(() => resolve(count)); return; }  // конец массива
+        } else {
+          buf += c;
+          if (buf.length > MAXBUF) { depth = 0; buf = ''; inString = false; escape = false; continue; }
+          if (inString) { if (escape) escape = false; else if (c === '\\') escape = true; else if (c === '"') inString = false; }
+          else if (c === '"') inString = true;
+          else if (c === '{') depth++;
+          else if (c === '}') {
+            if (--depth === 0) { try { onItem(JSON.parse(buf)); count++; } catch (_) {} buf = ''; }
+          }
+        }
+      }
+    }
+
+    readable.on('data', (chunk) => { if (finished) return; try { feed(dec.write(chunk)); } catch (e) { done(() => reject(e)); } });
+    readable.on('end', () => { try { feed(dec.end()); } catch (_) {} done(() => resolve(count)); });
+    readable.on('error', (e) => done(() => reject(e)));
+  });
+}
+
+// Потоковый GET → разбор массива объектов на лету (gzip/deflate/br + редиректы).
+function fetchStreamItems(urlStr, opts, onItem) {
+  const { headers = {}, timeout = CFG.pricesTimeout, retries = 2 } = opts || {};
+  return new Promise((resolve, reject) => {
+    let attempt = 0;
+    const go = () => {
+      let u; try { u = new URL(urlStr); } catch (e) { return reject(e); }
+      const mod = u.protocol === 'http:' ? http : https;
+      const req = mod.request(u, {
+        method: 'GET',
+        headers: { 'User-Agent': CFG.userAgent, 'Accept': 'application/json,text/plain,*/*',
+          'Accept-Language': CFG.acceptLanguage, 'Accept-Encoding': 'gzip, deflate, br', ...headers },
+      }, (res) => {
+        const code = res.statusCode || 0;
+        if (code >= 300 && code < 400 && res.headers.location) {
+          res.resume(); urlStr = new URL(res.headers.location, u).toString();
+          if (attempt++ < 5) return go();
+          return reject(new Error('too many redirects'));
+        }
+        if (code < 200 || code >= 300) {                 // ошибка: тело маленькое
+          const chunks = [];
+          res.on('data', (c) => chunks.push(c));
+          res.on('end', () => { const err = new Error('HTTP ' + code); err.statusCode = code;
+            err.body = Buffer.concat(chunks).toString('utf8').slice(0, 500); reject(err); });
+          return;
+        }
+        let stream = res;
+        const enc = (res.headers['content-encoding'] || '').toLowerCase();
+        try {
+          if (enc === 'gzip') stream = res.pipe(zlib.createGunzip());
+          else if (enc === 'deflate') stream = res.pipe(zlib.createInflate());
+          else if (enc === 'br') stream = res.pipe(zlib.createBrotliDecompress());
+        } catch (_) { /* как есть */ }
+        stream.on('error', reject);
+        streamExtractItems(stream, onItem).then(resolve, reject);
+      });
+      req.setTimeout(timeout, () => req.destroy(new Error('timeout')));
+      req.on('error', (e) => { if (attempt++ < retries) return setTimeout(go, 400 * attempt); reject(e); });
+      req.end();
+    };
+    go();
+  });
+}
+
+async function loadPriceFileOrUrl(file, url, headers, opts = {}) {
   if (file) {
-    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
-    return { map: parsePriceList(raw), source: 'file:' + path.basename(file) };
+    const base = 'file:' + path.basename(file);
+    try {
+      return { map: parsePriceList(JSON.parse(fs.readFileSync(file, 'utf8'))), source: base };
+    } catch (e) {
+      // Файл больше лимита строки V8 → читаем потоково (как bulk).
+      if (e.code === 'ERR_STRING_TOO_LONG' || e.code === 'ERR_FS_FILE_TOO_LARGE') {
+        const map = new Map();
+        await streamExtractItems(fs.createReadStream(file), (it) => addItem(map, it));
+        return { map, source: base + ' (stream)' };
+      }
+      throw e;
+    }
   }
   if (url) {
+    if (opts.stream) {                      // большой прайс (bulk) — потоково
+      const map = new Map();
+      await fetchStreamItems(url, { headers }, (it) => addItem(map, it));
+      return { map, source: hostOf(url) };
+    }
     const raw = await httpGetJson(url, { headers, retries: 2, timeout: CFG.pricesTimeout });
     return { map: parsePriceList(raw), source: hostOf(url) };
   }
@@ -454,7 +568,8 @@ async function getLisPrices() {
         Authorization: 'Bearer ' + CFG.lisApiToken, Referer: 'https://lis-skins.com/',
       });
     } else {
-      res = await loadPriceFileOrUrl('', CFG.lisBulkUrl, { Referer: 'https://lis-skins.com/' });
+      // bulk LIS — сотни МБ, читаем потоково (иначе ERR_STRING_TOO_LONG).
+      res = await loadPriceFileOrUrl('', CFG.lisBulkUrl, { Referer: 'https://lis-skins.com/' }, { stream: true });
     }
     flagEmpty(res, 'LIS');
     if (res.map.size) cacheSet(ckey, { entries: [...res.map], source: res.source });
@@ -471,7 +586,7 @@ async function getCsMoneyPrices() {
   const cached = cacheGet(ckey, CFG.pricesTtl);
   if (cached) return { map: new Map(cached.entries), source: cached.source };
   try {
-    const res = await loadPriceFileOrUrl(CFG.csmoneyPricesFile, CFG.csmoneyUrl);
+    const res = await loadPriceFileOrUrl(CFG.csmoneyPricesFile, CFG.csmoneyUrl, {}, { stream: true });
     flagEmpty(res, 'CS.money');
     if (res.map.size) cacheSet(ckey, { entries: [...res.map], source: res.source });
     return res;
