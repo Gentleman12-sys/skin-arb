@@ -981,7 +981,7 @@ async function runSearch(params) {
     // Запасной путь без токена: предзагруженный прайс (файл/bulk) + фильтр.
     const usable = lisState.map.size > 0;
     if (!usable && mode === 'auto') {
-      warnings.push('Прайс-лист LIS недоступен/пуст — показываю демо-данные. См. README, как подключить источник.');
+      warnings.push('LIS не подключён: задай LIS_API_TOKEN — тогда поиск идёт через быстрый market/search (без выгрузки прайса). Пока показываю демо. См. README.');
       candidates = demoCandidates(loUsd, hiUsd, targetUsd);
       source = 'demo'; usedMode = 'demo';
     } else {
