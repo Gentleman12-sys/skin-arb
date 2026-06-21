@@ -9,24 +9,27 @@
  * запросов. Этот сервер выступает прокси + кэшем + считалкой спреда, а
  * фронтенд (spread-arbitrage.html) ходит к нему за реальными ценами.
  *
- * Оптимизация: LIS-прайс выгружается ОДИН раз при старте, агрегируется до
- * Map<market_hash_name, usd> (~19K записей) и кэшируется в памяти + на диск.
- * Обновление в фоне каждые PRICES_TTL секунд — поиск не блокируется.
+ * Быстрый поиск: при наличии LIS_API_TOKEN прайс НЕ выгружается целиком.
+ * Вместо медленной выгрузки bulk (~640 МБ) используется точечный запрос
+ * market/search с фильтром по цене (price_from/price_to) — отдаёт только
+ * скины из нужного ценового коридора. Без токена остаётся старый путь
+ * (локальный файл / bulk-стриминг) как запасной.
  *
- * Bulk URL LIS (~640 МБ, 1.4M листингов) обрабатывается стриминг-парсером —
- * JSON парсится по одному объекту без создания строки полного ответа.
+ * Валюты без внешнего FX: Steam отдаёт цену сразу в валюте пользователя
+ * (priceoverview&currency=<код>), т.к. цены в регионах Steam независимы.
+ * LIS работает в USD — его цена переводится в валюту по курсу, который
+ * берётся из самого Steam (эталонный скин в USD и в валюте), с кэшем.
  *
  * Запуск:
  *   node server.js                 — поднять веб-сервер (по умолчанию :8787)
  *   node server.js serve --port N — то же, на порту N
  *   node server.js search 8000 [--currency RUB] [--corridor 5] [--net]
  *                                  [--mode auto|live|demo]   — поиск в консоли
- *   node server.js fx             — показать курсы валют
- *   node server.js steam "<name>" — цена одного скина в Steam
- *   node server.js diag           — формат прайс-листа LIS
+ *   node server.js fx             — показать курсы (Steam-derived)
+ *   node server.js steam "<name>" [--currency RUB] — цена скина в Steam
+ *   node server.js diag           — состояние источника LIS
  *
- * Все цены внутри считаются в USD (LIS отдаёт USD), пользователю
- * показываются в выбранной валюте по курсу USD→валюта.
+ * Спред считается в валюте пользователя: Steam — нативно, LIS — USD×курс.
  * ========================================================================== */
 
 'use strict';
@@ -39,7 +42,7 @@ const path  = require('path');
 const crypto= require('crypto');
 const { URL } = require('url');
 
-const VERSION = '2.1.0';
+const VERSION = '2.2.0';
 const ROOT    = __dirname;
 
 /* ============================================================================
@@ -49,19 +52,25 @@ const CFG = {
   port: int(process.env.PORT, 8787),
   cacheDir: process.env.CACHE_DIR || path.join(ROOT, '.cache'),
 
-  // Источник курсов валют (USD-база, без ключа). Фолбэк — константы из демо.
-  fxUrl: process.env.FX_PROVIDER_URL || 'https://open.er-api.com/v6/latest/USD',
+  // Курс USD→валюта берётся из самого Steam (эталонный скин), без внешнего FX.
+  // FX_REF_ITEM — ликвидный скин, по которому считается курс. FX_TTL — кэш курса.
+  fxRefItem: process.env.FX_REF_ITEM || 'AK-47 | Redline (Field-Tested)',
   fxTtl: int(process.env.FX_TTL, 6 * 3600) * 1000,
 
-  // LIS-Skins. Приоритет: локальный файл → API по токену → bulk-JSON по ссылке.
+  // LIS-Skins. Приоритет live-источника: API-токен (market/search, быстро) →
+  // локальный файл → bulk-JSON по ссылке (медленно, запасной путь).
   lisPricesFile: process.env.LIS_PRICES_FILE || '',
   lisApiBase:    process.env.LIS_API_BASE || 'https://api.lis-skins.com/v1',
   lisApiToken:   process.env.LIS_API_TOKEN || '',
   lisBulkUrl:    process.env.LIS_BULK_URL || 'https://lis-skins.com/market_export_json/api_csgo_full.json',
+  lisGame:       process.env.LIS_GAME || 'csgo',
+  // Сколько страниц market/search листать и сколько уникальных скинов набирать.
+  lisSearchPages: int(process.env.LIS_SEARCH_PAGES, 6),
+  lisSearchMax:   int(process.env.LIS_SEARCH_MAX, 120),
 
   pricesTtl: int(process.env.PRICES_TTL, 30 * 60) * 1000,  // 30 мин
 
-  // Steam priceoverview: appid 730 (CS2), currency=1 (USD).
+  // Steam priceoverview: appid 730 (CS2). currency задаётся по валюте поиска.
   steamTtl:         int(process.env.STEAM_TTL, 6 * 3600) * 1000,
   steamDelayMs:     int(process.env.STEAM_DELAY_MS, 3500),     // ~17 запросов/мин
   steamMaxLookups:  int(process.env.STEAM_MAX_LOOKUPS, 40),   // потолок «свежих» запросов
@@ -86,6 +95,13 @@ const LINKS = {
 };
 
 const WEARS = ['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn', 'Battle-Scarred'];
+
+// Числовые коды валют Steam (priceoverview&currency=<код>). Цены в регионах
+// Steam независимы, поэтому запрашиваем нативно, а не пересчитываем через FX.
+const STEAM_CURRENCY = { USD: 1, EUR: 3, RUB: 5, UAH: 18, KZT: 37 };
+function steamCurrencyCode(currency) {
+  return STEAM_CURRENCY[String(currency || 'USD').toUpperCase()] || 1;
+}
 
 /* ============================================================================
  * МЕЛКИЕ УТИЛИТЫ
@@ -545,26 +561,44 @@ try {
 const FALLBACK_FX = Object.assign({ USD: 1, RUB: 92, EUR: 0.92, KZT: 475, UAH: 41 }, DEMO.fx_fallback || {});
 
 /* ============================================================================
- * КУРСЫ ВАЛЮТ
+ * КУРС USD→ВАЛЮТА БЕЗ ВНЕШНЕГО FX
+ *
+ * LIS работает в USD, Steam — нативно в валюте региона. Чтобы перевести цену
+ * LIS в валюту показа, берём курс из самого Steam: эталонный ликвидный скин
+ * (FX_REF_ITEM) запрашивается в USD и в нужной валюте, отношение цен = курс.
+ * Кэш на FX_TTL. Если Steam недоступен — фолбэк на встроенные константы.
+ * Для USD курс = 1 (никаких запросов).
  * ========================================================================== */
-async function getFx() {
-  const cached = cacheGet('fx:USD', CFG.fxTtl);
+async function getCurrencyRate(currency) {
+  const cur = String(currency || 'USD').toUpperCase();
+  if (cur === 'USD') return { rate: 1, source: 'usd' };
+  const code = STEAM_CURRENCY[cur];
+  if (!code) return { rate: FALLBACK_FX[cur] || 1, source: 'fallback' };
+
+  const key = 'rate:' + cur;
+  const cached = cacheGet(key, CFG.fxTtl);
   if (cached) return cached;
+
   try {
-    const data = await httpGetJson(CFG.fxUrl, { retries: 1 });
-    const rates = data && (data.rates || data.conversion_rates);
-    if (rates && rates.RUB) {
-      const out = { rates, source: hostOf(CFG.fxUrl), ts: Date.now() };
-      cacheSet('fx:USD', out);
+    const usd = await getSteamPrice(CFG.fxRefItem, 1);
+    const loc = await getSteamPrice(CFG.fxRefItem, code);
+    if (usd.price > 0 && loc.price > 0) {
+      const out = { rate: loc.price / usd.price, source: 'steam' };
+      cacheSet(key, out);
       return out;
     }
-  } catch (e) { warn('fx provider failed:', e.message); }
-  return { rates: FALLBACK_FX, source: 'fallback', ts: Date.now() };
+  } catch (e) { warn('steam rate failed:', e.message); }
+
+  return { rate: FALLBACK_FX[cur] || 1, source: 'fallback' };
 }
-function resolveRate(fx, currency) {
-  const c = String(currency || 'USD').toUpperCase();
-  if (fx.rates && Number.isFinite(fx.rates[c])) return fx.rates[c];
-  return FALLBACK_FX[c] || 1;
+
+// Курс только из кэша/констант — без обращений к Steam (для /api/fx и подсказок).
+function cachedRate(currency) {
+  const cur = String(currency || 'USD').toUpperCase();
+  if (cur === 'USD') return { rate: 1, source: 'usd' };
+  const cached = cacheGet('rate:' + cur, CFG.fxTtl);
+  if (cached) return cached;
+  return { rate: FALLBACK_FX[cur] || 1, source: 'fallback' };
 }
 function hostOf(u) { try { return new URL(u).host; } catch (_) { return u; } }
 
@@ -584,8 +618,11 @@ function enqueueSteam(fn) {
   return run;
 }
 
-async function getSteamPrice(mhn) {
-  const key = 'steam:' + mhn;
+// Ключ кэша Steam учитывает валюту: цены в регионах независимы.
+function steamKey(mhn, code) { return 'steam:' + code + ':' + mhn; }
+
+async function getSteamPrice(mhn, code = 1) {
+  const key = steamKey(mhn, code);
   const cached = cacheGet(key, CFG.steamTtl);
   if (cached !== undefined) return Object.assign({ source: 'cache' }, cached);
 
@@ -593,7 +630,7 @@ async function getSteamPrice(mhn) {
   for (let attempt = 0; attempt <= CFG.steamRetries; attempt++) {
     try {
       const out = await enqueueSteam(async () => {
-        const url = 'https://steamcommunity.com/market/priceoverview/?appid=730&currency=1'
+        const url = 'https://steamcommunity.com/market/priceoverview/?appid=730&currency=' + code
           + '&market_hash_name=' + encodeURIComponent(mhn);
         const data = await httpGetJson(url, { retries: 0, timeout: CFG.httpTimeout });
         if (!data || data.success !== true) return { price: null };
@@ -777,6 +814,64 @@ function startBgRefresh() {
 }
 
 /* ============================================================================
+ * LIS market/search — быстрый точечный поиск по ценовому коридору (нужен токен)
+ *
+ * Главная оптимизация скорости: вместо выгрузки всего прайса (~640 МБ) берём
+ * только скины из диапазона [priceFrom, priceTo] (USD). Листаем по cursor'у
+ * (meta.next_cursor) и агрегируем до Map<market_hash_name, usd> — минимальная
+ * цена за скин. Адаптация метода market/search публичного API LIS-Skins.
+ * ========================================================================== */
+async function lisSearch(priceFrom, priceTo) {
+  if (!CFG.lisApiToken) throw new Error('LIS_API_TOKEN не задан');
+  const base = CFG.lisApiBase.replace(/\/$/, '');
+  const headers = { Authorization: 'Bearer ' + CFG.lisApiToken, Accept: 'application/json' };
+  const map = new Map();
+  let cursor = null, pages = 0, listings = 0;
+  const t0 = Date.now();
+
+  while (pages < CFG.lisSearchPages && map.size < CFG.lisSearchMax) {
+    const p = new URLSearchParams();
+    p.set('game', CFG.lisGame);
+    if (priceFrom != null && priceFrom > 0) p.set('price_from', String(round2(priceFrom)));
+    if (priceTo   != null && priceTo   > 0) p.set('price_to',   String(round2(priceTo)));
+    p.set('sort_by', 'lowest_price');
+    if (cursor) p.set('cursor', cursor);
+
+    const data = await httpGetJson(base + '/market/search?' + p.toString(),
+      { headers, retries: 1, timeout: CFG.httpTimeout });
+
+    const list = Array.isArray(data && data.data)  ? data.data
+               : Array.isArray(data && data.items) ? data.items
+               : Array.isArray(data)               ? data : [];
+    if (!list.length) break;
+    for (const it of list) {
+      if (!it || typeof it !== 'object') continue;
+      listings++;
+      const name  = normName(pickField(it, NAME_FIELDS));
+      const price = parseMoney(pickField(it, PRICE_FIELDS));
+      if (name && price != null && price > 0) keepMin(map, name, price);
+    }
+    cursor = (data && data.meta && data.meta.next_cursor) || null;
+    pages++;
+    if (!cursor) break;
+  }
+  const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+  info(`LIS: market/search — ${map.size} скинов из ${listings} листингов за ${elapsed}с (${pages} стр.)`);
+  return { map, source: 'api:market/search' };
+}
+
+// Отфильтровать предзагруженный прайс (файл/bulk) по ценовому коридору USD.
+function filterMapByCorridor(map, loUsd, hiUsd) {
+  const out = new Map();
+  for (const [name, price] of map) {
+    if (price == null || price <= 0) continue;
+    if (loUsd > 0 && (price < loUsd || price > hiUsd)) continue;
+    out.set(name, price);
+  }
+  return out;
+}
+
+/* ============================================================================
  * СБОРКА ТАБЛИЦЫ РЫНКА
  * ========================================================================== */
 function demoTable() {
@@ -794,22 +889,32 @@ function demoTable() {
   });
 }
 
-async function liveTable() {
-  const map = lisState.map;
-  const rows = [];
-  for (const [mhn, price] of map) {
+// Map<mhn, usd> → список кандидатов с разбором износа.
+function mapToCandidates(map) {
+  const out = [];
+  for (const [mhn, usd] of map) {
     const { base, wear } = splitWear(mhn);
-    rows.push({
-      name: base, wear, mhn,
-      lis: price,
-      steam: undefined, // подтянем точечно из Steam
-    });
+    out.push({ name: base, wear, mhn, lisUsd: usd });
   }
-  return { rows, source: lisState.source, error: lisState.error };
+  return out;
+}
+
+// Демо-кандидаты в коридоре USD (у демо уже есть и LIS, и Steam — без запросов).
+function demoCandidates(loUsd, hiUsd, targetUsd) {
+  return demoTable()
+    .filter((r) => r.lis != null && r.lis > 0 &&
+      (targetUsd <= 0 || (r.lis >= loUsd && r.lis <= hiUsd)))
+    .map((r) => ({
+      name: r.name, wear: r.wear, mhn: r.mhn,
+      lisUsd: r.lis, steamUsd: r.steam == null ? null : r.steam, why: r.why,
+    }));
 }
 
 /* ============================================================================
  * ДВИЖОК АРБИТРАЖА
+ *
+ * Спред считается в валюте пользователя. LIS отдаёт USD → переводим по курсу
+ * (Steam-derived). Steam запрашиваем нативно в той же валюте (currency=<код>).
  * ========================================================================== */
 async function runSearch(params) {
   const amount      = float(params.amount, 0);
@@ -818,83 +923,105 @@ async function runSearch(params) {
   const net         = params.net === true || params.net === '1' || params.net === 'true';
   let mode          = ['auto', 'live', 'demo'].includes(params.mode) ? params.mode : CFG.defaultMode;
 
-  const fx   = await getFx();
-  const rate = resolveRate(fx, currency);
+  const code = steamCurrencyCode(currency);
+
+  // Курс USD→валюта из Steam (для перевода цены LIS в валюту показа).
+  const fx   = await getCurrencyRate(currency);
+  const rate = fx.rate;
+
   const targetUsd = amount > 0 ? amount / rate : 0;
-  const corr = corridorPct / 100;
-  const lo   = targetUsd * (1 - corr);
-  const hi   = targetUsd * (1 + corr);
+  const corr  = corridorPct / 100;
+  const loUsd = targetUsd * (1 - corr);
+  const hiUsd = targetUsd * (1 + corr);
 
   const warnings = [];
-  let table, source, usedMode = mode;
+  let candidates = [];          // { name, wear, mhn, lisUsd, steamUsd?, why? }
+  let source, usedMode = mode;
 
   if (mode === 'demo') {
-    table = demoTable();
+    candidates = demoCandidates(loUsd, hiUsd, targetUsd);
     source = 'demo';
+  } else if (CFG.lisApiToken) {
+    // Быстрый путь: точечный market/search по ценовому коридору.
+    try {
+      if (targetUsd <= 0) {
+        warnings.push('Укажи сумму — market/search ищет по ценовому коридору.');
+      } else {
+        const res = await lisSearch(loUsd, hiUsd);
+        candidates = mapToCandidates(res.map);
+      }
+      source = 'api:market/search';
+      usedMode = 'live';
+    } catch (e) {
+      warn('LIS search failed:', e.message);
+      if (mode === 'auto') {
+        warnings.push('LIS недоступен (' + e.message + ') — демо-данные.');
+        candidates = demoCandidates(loUsd, hiUsd, targetUsd);
+        source = 'demo'; usedMode = 'demo';
+      } else {
+        warnings.push('LIS: ' + e.message);
+        source = 'error'; usedMode = 'live';
+      }
+    }
   } else {
-    const live = await liveTable();
-    const usable = live.rows.some((r) => r.lis != null && r.lis > 0);
+    // Запасной путь без токена: предзагруженный прайс (файл/bulk) + фильтр.
+    const usable = lisState.map.size > 0;
     if (!usable && mode === 'auto') {
       warnings.push('Прайс-лист LIS недоступен/пуст — показываю демо-данные. См. README, как подключить источник.');
-      table = demoTable();
-      source = 'demo';
-      usedMode = 'demo';
+      candidates = demoCandidates(loUsd, hiUsd, targetUsd);
+      source = 'demo'; usedMode = 'demo';
     } else {
-      table = live.rows;
-      source = live.source;
-      usedMode = 'live';
-      if (live.error) warnings.push('LIS: ' + live.error);
+      candidates = mapToCandidates(filterMapByCorridor(lisState.map, loUsd, hiUsd));
+      source = lisState.source; usedMode = 'live';
+      if (lisState.error) warnings.push('LIS: ' + lisState.error);
     }
   }
 
-  // Кандидаты в ценовом коридоре
-  const candidates = [];
-  for (const r of table) {
-    if (r.lis == null || r.lis <= 0) continue;
-    if (targetUsd > 0 && (r.lis < lo || r.lis > hi)) continue;
-    candidates.push({ ...r, payout: r.lis });
-  }
-  candidates.sort((a, b) => b.payout - a.payout);
+  // Сортируем по выплате LIS (USD) убыв.
+  candidates.sort((a, b) => b.lisUsd - a.lisUsd);
 
-  // Цены Steam по кандидатам
   const matched = [], unmatched = [];
   let freshLookups = 0;
   for (const c of candidates) {
-    let steam = c.steam, steamSource = 'demo';
-    if (usedMode === 'live') {
-      const cachedHit = cacheGet('steam:' + c.mhn, CFG.steamTtl);
+    const payoutCur = c.lisUsd * rate;       // LIS USD → валюта показа
+
+    // Steam — нативно в валюте пользователя (или из демо, переведённого по курсу).
+    let steamCur, steamSource;
+    if (usedMode === 'demo') {
+      steamCur = c.steamUsd == null ? null : c.steamUsd * rate;
+      steamSource = 'demo';
+    } else {
+      const cachedHit = cacheGet(steamKey(c.mhn, code), CFG.steamTtl);
       if (cachedHit !== undefined) {
-        steam = cachedHit.price;
+        steamCur = cachedHit.price;
         steamSource = 'cache';
       } else if (freshLookups < CFG.steamMaxLookups) {
-        const sp = await getSteamPrice(c.mhn);
-        steam = sp.price;
+        const sp = await getSteamPrice(c.mhn, code);
+        steamCur = sp.price;
         steamSource = sp.source;
         freshLookups++;
       } else {
         unmatched.push({
-          name: c.name, wear: c.wear, mhn: c.mhn,
-          payout: c.payout,
+          name: c.name, wear: c.wear, mhn: c.mhn, payout: round2(payoutCur),
           why: 'лимит Steam — повтори поиск, дозапросим',
         });
         continue;
       }
     }
-    if (steam == null) {
+    if (steamCur == null) {
       unmatched.push({
-        name: c.name, wear: c.wear, mhn: c.mhn,
-        payout: c.payout,
+        name: c.name, wear: c.wear, mhn: c.mhn, payout: round2(payoutCur),
         why: c.why || 'нет цены в Steam (имя ≠ market_hash_name)',
       });
       continue;
     }
-    let spread = c.payout - steam;
-    if (net) spread -= steam * CFG.steamFee;
-    const pct = steam > 0 ? (spread / steam) * 100 : 0;
+    let spread = payoutCur - steamCur;
+    if (net) spread -= steamCur * CFG.steamFee;
+    const pct = steamCur > 0 ? (spread / steamCur) * 100 : 0;
     matched.push({
       name: c.name, wear: c.wear, mhn: c.mhn,
-      lis: numOrNull(c.lis),
-      payout: round2(c.payout), steam: round2(steam),
+      lis: round2(payoutCur),
+      payout: round2(payoutCur), steam: round2(steamCur),
       spread: round2(spread), pct: Math.round(pct * 10) / 10, steamSource,
       links: { steam: LINKS.steam(c.mhn), lis: LINKS.lis(c.name) },
     });
@@ -904,23 +1031,27 @@ async function runSearch(params) {
     ? matched.reduce((m, r) => (r.spread > m.spread ? r : m), matched[0])
     : null;
 
+  // Коридор в валюте показа = сумма ± коридор (без обратного перевода).
+  const loCur = amount > 0 ? round2(amount * (1 - corr)) : 0;
+  const hiCur = amount > 0 ? round2(amount * (1 + corr)) : 0;
+
   return {
     ok: true, version: VERSION,
     mode: usedMode, net, currency,
     fx: { rate: round4(rate), source: fx.source, currency },
     query: { amount, targetUsd: round2(targetUsd), corridorPct,
-             corridor: { lo: round2(lo), hi: round2(hi) } },
+             corridor: { lo: loCur, hi: hiCur } },
     meta: {
       candidates: candidates.length, matched: matched.length,
       unmatched: unmatched.length, steamLookups: freshLookups,
-      lisSource: source, lisTotal: lisState.map.size,
-      lisLastRefresh: lisState.lastRefresh,
+      lisSource: source,
+      lisTotal: CFG.lisApiToken ? candidates.length : lisState.map.size,
+      lisLastRefresh: CFG.lisApiToken ? Date.now() : lisState.lastRefresh,
     },
     best, rows: matched, unmatched, warnings,
   };
 }
 
-function numOrNull(v) { return Number.isFinite(v) ? round2(v) : null; }
 function round2(n) { return Math.round(n * 100) / 100; }
 function round4(n) { return Math.round(n * 10000) / 10000; }
 
@@ -948,8 +1079,8 @@ async function handleApi(pathname, q, res) {
     return sendJson(res, 200, {
       ok: true, version: VERSION, mode: CFG.defaultMode,
       lis: {
-        configured: !!(CFG.lisPricesFile || CFG.lisApiToken || CFG.lisBulkUrl),
-        source: CFG.lisPricesFile ? 'file' : CFG.lisApiToken ? 'api' : 'bulk',
+        configured: !!(CFG.lisApiToken || CFG.lisPricesFile || CFG.lisBulkUrl),
+        source: CFG.lisApiToken ? 'api/search' : CFG.lisPricesFile ? 'file' : 'bulk',
         total: lisState.map.size,
         cached: !!cacheGet('prices:lis', CFG.pricesTtl * 2),
         loading: lisState.loading,
@@ -957,32 +1088,38 @@ async function handleApi(pathname, q, res) {
         error: lisState.error,
       },
       steam: { delayMs: CFG.steamDelayMs, maxLookups: CFG.steamMaxLookups },
+      fx: { source: 'steam', refItem: CFG.fxRefItem, currencies: Object.keys(STEAM_CURRENCY) },
       demoSkins: (DEMO.skins || []).length,
       uptime: process.uptime(),
     });
   }
   if (pathname === '/api/fx') {
-    const fx = await getFx();
-    return sendJson(res, 200, { ok: true, base: 'USD', source: fx.source, rates: fx.rates });
+    // Курсы из кэша/констант (Steam-derived). Без запросов к Steam здесь.
+    const rates = {};
+    for (const c of Object.keys(STEAM_CURRENCY)) rates[c] = round4(cachedRate(c).rate);
+    return sendJson(res, 200, { ok: true, base: 'USD', source: 'steam', refItem: CFG.fxRefItem, rates });
   }
   if (pathname === '/api/steam') {
     const name = normName(q.get('name'));
     if (!name) return sendJson(res, 400, { ok: false, error: 'name required' });
-    const sp = await getSteamPrice(name);
-    return sendJson(res, 200, { ok: true, name, price: sp.price, source: sp.source, error: sp.error });
+    const currency = String(q.get('currency') || 'USD').toUpperCase();
+    const sp = await getSteamPrice(name, steamCurrencyCode(currency));
+    return sendJson(res, 200, { ok: true, name, currency, price: sp.price, source: sp.source, error: sp.error });
   }
   if (pathname === '/api/prices') {
     const sample = [...lisState.map].slice(0, int(q.get('limit'), 50));
     return sendJson(res, 200, {
-      ok: true, exchange: 'lis', source: lisState.source,
+      ok: true, exchange: 'lis',
+      source: CFG.lisApiToken ? 'api/search (on-demand)' : lisState.source,
       count: lisState.map.size,
       sample: sample.map(([name, price]) => ({ name, price })),
+      note: CFG.lisApiToken ? 'market/search — точечный поиск, прайс не выгружается целиком' : undefined,
       error: lisState.error,
     });
   }
   if (pathname === '/api/search') {
-    // Если LIS ещё не загружен — подождать
-    if (lisState.map.size === 0 && !lisState.loading) {
+    // Без токена ждём предзагрузку прайса (файл/bulk). С токеном — точечный поиск.
+    if (!CFG.lisApiToken && lisState.map.size === 0 && !lisState.loading) {
       await refreshLisPrices();
     }
     const result = await runSearch({
@@ -1047,8 +1184,9 @@ function startServer(port) {
     console.log(`  СПРЕД v${VERSION} — сервер запущен`);
     console.log(`  → http://localhost:${port}`);
     console.log(`  Режим: ${CFG.defaultMode}`);
-    const lisSrc = CFG.lisPricesFile ? 'файл' : CFG.lisApiToken ? 'API-токен' : 'bulk-URL (стриминг)';
-    console.log(`  LIS: ${lisSrc} · Steam: priceoverview · FX: ${hostOf(CFG.fxUrl)}`);
+    const lisSrc = CFG.lisApiToken ? 'API market/search (точечно)'
+                 : CFG.lisPricesFile ? 'файл' : 'bulk-URL (стриминг)';
+    console.log(`  LIS: ${lisSrc} · Steam: priceoverview (нативная валюта) · курс: Steam`);
     console.log('');
   });
   return server;
@@ -1084,7 +1222,8 @@ async function cliSearch(args) {
     net: !!args.net, mode: args.mode || CFG.defaultMode,
   });
   const dp = ['RUB', 'KZT', 'UAH'].includes(currency) ? 0 : 2;
-  const toCur = (usd) => fmt(usd * result.fx.rate, dp);
+  // Значения уже в валюте показа (Steam — нативно, LIS — USD×курс).
+  const toCur = (v) => fmt(v, dp);
 
   console.log('');
   console.log(`  Режим: ${result.mode} · площадка: LIS · валюта: ${currency}` +
@@ -1133,25 +1272,32 @@ async function cliSearch(args) {
 }
 
 async function cliFx() {
-  const fx = await getFx();
-  console.log('Источник:', fx.source);
-  for (const c of ['USD', 'RUB', 'EUR', 'KZT', 'UAH']) {
-    if (fx.rates[c] != null) console.log(`  USD→${c}: ${fx.rates[c]}`);
+  console.log('Курс USD→валюта (из Steam, эталон: ' + CFG.fxRefItem + ')');
+  for (const c of ['RUB', 'EUR', 'KZT', 'UAH']) {
+    const r = await getCurrencyRate(c);
+    console.log(`  USD→${c}: ${round4(r.rate)} (${r.source})`);
   }
 }
 
 async function cliSteam(args) {
   const name = normName(args._.join(' '));
   if (!name) { console.error('Укажи имя: node server.js steam "AK-47 | Asiimov (Field-Tested)"'); process.exit(1); }
-  const sp = await getSteamPrice(name);
-  console.log(`${name}: ${sp.price == null ? 'нет цены' : '$' + sp.price} (${sp.source})${sp.error ? ' — ' + sp.error : ''}`);
+  const currency = (args.currency || 'USD').toUpperCase();
+  const sp = await getSteamPrice(name, steamCurrencyCode(currency));
+  console.log(`${name}: ${sp.price == null ? 'нет цены' : sp.price + ' ' + currency} (${sp.source})${sp.error ? ' — ' + sp.error : ''}`);
 }
 
 async function cliDiag() {
-  console.log(`Источник: LIS`);
+  if (CFG.lisApiToken) {
+    console.log('Источник: LIS market/search (точечный поиск по токену)');
+    console.log('  Прайс не выгружается целиком — каждый поиск запрашивает только');
+    console.log('  скины из ценового коридора. Проверка: node server.js search 8000');
+    return;
+  }
+  console.log(`Источник: LIS (файл/bulk)`);
   console.log(`  source=${lisState.source} · позиций=${lisState.map.size}${lisState.error ? ' · ошибка: ' + lisState.error : ''}`);
   [...lisState.map].slice(0, 10).forEach(([name, price]) => console.log(`    ${name} → $${price}`));
-  if (!lisState.map.size) console.log('    (пусто — настрой LIS_PRICES_FILE / LIS_API_TOKEN, см. README)');
+  if (!lisState.map.size) console.log('    (пусто — настрой LIS_API_TOKEN / LIS_PRICES_FILE, см. README)');
 }
 
 /* ============================================================================
@@ -1209,24 +1355,22 @@ async function main() {
   // serve (по умолчанию)
   const port = int((cmd === 'serve' ? args.port : process.env.PORT) || CFG.port, CFG.port);
 
-  // 1) Восстановить LIS из кэша (мгновенно, если есть)
-  initLisFromCache();
-
-  // 2) Поднять сервер (не ждём загрузки прайсов)
-  startServer(port);
-
-  // 3) Загрузить/обновить LIS прайсы в фоне
-  if (lisState.map.size === 0) {
-    info('LIS: первая загрузка прайсов (bulk через стриминг) …');
+  if (CFG.lisApiToken) {
+    // Быстрый путь: ничего не выгружаем заранее — каждый поиск точечно
+    // обращается к market/search по ценовому коридору.
+    startServer(port);
+    info('LIS: режим market/search — прайс не выгружается, поиск точечный по токену');
   } else {
-    info('LIS: обновление прайсов в фоне …');
+    // Запасной путь без токена: предзагрузка прайса (файл/bulk) + фон.
+    initLisFromCache();
+    startServer(port);
+    if (lisState.map.size === 0) info('LIS: первая загрузка прайсов (bulk через стриминг) …');
+    else info('LIS: обновление прайсов в фоне …');
+    refreshLisPrices().then(() => {
+      info(`LIS: готов — ${lisState.map.size.toLocaleString()} скинов (${lisState.source})`);
+    });
+    startBgRefresh();
   }
-  refreshLisPrices().then(() => {
-    info(`LIS: готов — ${lisState.map.size.toLocaleString()} скинов (${lisState.source})`);
-  });
-
-  // 4) Фоновое обновление каждые 30 мин
-  startBgRefresh();
 }
 
 main().catch((e) => {

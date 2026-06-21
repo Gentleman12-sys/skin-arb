@@ -540,8 +540,8 @@ footer{border-top:1px solid var(--line);padding:50px 0 30px}
       </button>
 
       <div class="deck-foot">
-        <span><span class="lis-d"></span> LIS-Skins — payout USD</span>
-        <span><span class="st-d"></span> Steam Market — lowest price</span>
+        <span><span class="lis-d"></span> LIS-Skins — payout (USD→валюта)</span>
+        <span><span class="st-d"></span> Steam Market — нативная валюта</span>
       </div>
     </div>
   </div>
@@ -648,14 +648,14 @@ footer{border-top:1px solid var(--line);padding:50px 0 30px}
 <section class="how" id="how">
   <div class="wrap">
     <h2>Как это работает</h2>
-    <p class="sub">Ни LIS-Skins, ни Steam не умеют искать «дай все скины по цене ~8000₽» — поиск работает по названию. Поэтому прайс LIS выгружается один раз и кэшируется, а Steam проверяется только по кандидатам из коридора.</p>
+    <p class="sub">LIS-Skins умеет искать по цене напрямую — берём только скины из нужного коридора через market/search, без выгрузки всего прайса. Steam проверяется по кандидатам сразу в валюте поиска.</p>
     <div class="steps">
-      <div class="step"><div class="n">01</div><h3>Прайс LIS (один раз)</h3><p>Полная таблица цен LIS-Skins загружается при старте сервера и обновляется каждые 30 минут в фоне. Результат кэшируется в памяти и на диске — поиск не ждёт загрузки.</p></div>
-      <div class="step"><div class="n">02</div><h3>Коридор цены</h3><p>Вокруг введённой суммы строится диапазон ±N%. Из кэша мгновенно выбираются скины, которые LIS платит в этом диапазоне — обычно несколько десятков кандидатов.</p></div>
-      <div class="step"><div class="n">03</div><h3>Сверка со Steam</h3><p>Только для кандидатов запрашивается цена Steam Market. С паузами и кэшем — у эндпоинта лимит ~20 запросов в минуту. Чем уже коридор — тем быстрее.</p></div>
+      <div class="step"><div class="n">01</div><h3>Коридор → market/search</h3><p>Вокруг суммы строится диапазон ±N% (в USD). LIS-Skins отдаёт только скины из этого ценового коридора (price_from/price_to) — быстро, без скачивания 640 МБ прайса.</p></div>
+      <div class="step"><div class="n">02</div><h3>Steam в валюте</h3><p>Для кандидатов запрашивается цена Steam Market сразу в валюте поиска (currency=код). Цены в регионах Steam независимы, поэтому никакого внешнего курса не нужно.</p></div>
+      <div class="step"><div class="n">03</div><h3>Спред и курс</h3><p>LIS работает в USD — переводим в валюту по курсу из самого Steam (эталонный скин, с кэшем). Спред = выплата LIS − цена Steam, всё в валюте показа.</p></div>
     </div>
     <div class="markets" id="markets">
-      <div class="mk steam"><div class="h"><span class="d"></span> Steam Community Market</div><p>Публичный витринный рынок Valve. Берём минимальную цену лота (при отсутствии — медианную), запрашиваем в USD. Жёсткий лимит запросов, поэтому проверяем точечно.</p></div>
+      <div class="mk steam"><div class="h"><span class="d"></span> Steam Community Market</div><p>Публичный витринный рынок Valve. Берём минимальную цену лота (при отсутствии — медианную) сразу в валюте поиска (currency=код) — цены в регионах Steam независимы. Жёсткий лимит запросов, поэтому проверяем точечно.</p></div>
       <div class="mk lis"><div class="h"><span class="d"></span> LIS-Skins</div><p>Площадка скупки скинов: платит за предмет фиксированную сумму в долларах. Прайс выгружается один раз, кэшируется в памяти и обновляется в фоне.</p></div>
     </div>
   </div>
@@ -675,7 +675,7 @@ footer{border-top:1px solid var(--line);padding:50px 0 30px}
     </div>
     <div class="foot-links">
       <div class="foot-col"><h5>Продукт</h5><a href="#top">Поиск спреда</a><a href="#how">Как это работает</a></div>
-      <div class="foot-col"><h5>Данные</h5><a href="#">Прайс LIS (USD)</a><a href="#">Steam priceoverview</a><a href="#">Курс USD→валюта</a></div>
+      <div class="foot-col"><h5>Данные</h5><a href="#">LIS market/search</a><a href="#">Steam priceoverview</a><a href="#">Курс из Steam</a></div>
     </div>
   </div>
   <div class="wrap"><div class="copyright">© 2026 СПРЕД · спред не равен чистому профиту</div></div>
@@ -750,8 +750,11 @@ const EXT_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
    ============================================================ */
 const $ = s => document.querySelector(s);
 const fmtNum = (n,dp)=> Number(n).toLocaleString("ru-RU",{minimumFractionDigits:dp,maximumFractionDigits:dp});
-function toCur(usd){ const c=CUR[cur]; return c.sym + " " + fmtNum(usd*c.rate, c.dp); }
-function toCurSigned(usd){ const c=CUR[cur]; const s=usd>=0?"+":"\u2212"; return s+c.sym+" "+fmtNum(Math.abs(usd)*c.rate,c.dp); }
+// \u0412 live \u0431\u044d\u043a\u0435\u043d\u0434 \u0443\u0436\u0435 \u043e\u0442\u0434\u0430\u0451\u0442 \u0437\u043d\u0430\u0447\u0435\u043d\u0438\u044f \u0432 \u0432\u0430\u043b\u044e\u0442\u0435 \u043f\u043e\u043a\u0430\u0437\u0430 (Steam \u2014 \u043d\u0430\u0442\u0438\u0432\u043d\u043e, LIS \u2014 USD\u00d7\u043a\u0443\u0440\u0441),
+// \u043f\u043e\u044d\u0442\u043e\u043c\u0443 \u043c\u043d\u043e\u0436\u0438\u0442\u0435\u043b\u044c = 1. \u0412 demo \u0437\u043d\u0430\u0447\u0435\u043d\u0438\u044f \u0432 USD \u2014 \u0443\u043c\u043d\u043e\u0436\u0430\u0435\u043c \u043d\u0430 \u043a\u0443\u0440\u0441-\u043a\u043e\u043d\u0441\u0442\u0430\u043d\u0442\u0443.
+function dispMul(){ return MODE==="live" ? 1 : CUR[cur].rate; }
+function toCur(v){ const c=CUR[cur]; return c.sym + " " + fmtNum(v*dispMul(), c.dp); }
+function toCurSigned(v){ const c=CUR[cur]; const s=v>=0?"+":"\u2212"; return s+c.sym+" "+fmtNum(Math.abs(v)*dispMul(),c.dp); }
 function parseAmount(str){ return parseFloat(String(str).replace(/[^\d.,]/g,"").replace(/\s/g,"").replace(",",".")) || 0; }
 const shortName = n => (n.split(" | ")[1] || n);
 
@@ -768,6 +771,7 @@ const mhnOf = (name,wear)=> wear && !/\(/.test(name) ? `${name} (${wear})` : nam
    ============================================================ */
 let sortKey="spread", sortDir=-1, netMode=false;
 let MODE="demo", API_BASE=null, fxSource="\u0444\u043E\u043B\u0431\u044D\u043A";
+let liveRate=null;            // \u043A\u0443\u0440\u0441 USD\u2192\u0432\u0430\u043B\u044E\u0442\u0430 \u0438\u0437 \u0431\u044D\u043A\u0435\u043D\u0434\u0430 (\u0434\u043B\u044F \u043F\u043E\u0434\u0441\u043A\u0430\u0437\u043A\u0438 \u00AB\u2248 $\u00BB)
 let lastResult=null, firstSearch=true;
 
 /* ============================================================
@@ -801,7 +805,8 @@ async function liveCompute(){
   const r=await fetch(u);
   if(!r.ok) throw new Error("HTTP "+r.status);
   const j=await r.json();
-  if(j.fx && Number.isFinite(j.fx.rate)){ CUR[cur].rate=j.fx.rate; fxSource=j.fx.source; }
+  // Значения уже в валюте показа. Курс храним отдельно — только для подсказки «≈ $».
+  if(j.fx && Number.isFinite(j.fx.rate)){ liveRate=j.fx.rate; fxSource=j.fx.source; }
   return {
     rows:j.rows.map(x=>({name:x.name,wear:x.wear,mhn:x.mhn,
       lis:x.lis,payout:x.payout,steam:x.steam,spread:x.spread,pct:x.pct})),
@@ -871,7 +876,7 @@ function render(result, stagger){
     const sp=$("#bestSpread"), pc=$("#bestPct");
     const neg=best.spread<0;
     sp.classList.toggle("neg",neg); pc.classList.toggle("neg",neg);
-    if(!neg) animateCount(sp, best.spread*c.rate, c.dp, "+"+c.sym+" ");
+    if(!neg) animateCount(sp, best.spread*dispMul(), c.dp, "+"+c.sym+" ");
     else sp.textContent = toCurSigned(best.spread);
     pc.textContent = (best.pct>=0?"+":"")+best.pct.toFixed(1)+"%";
     $("#bestSteamLink").href = steamLink(best.mhn);
@@ -964,7 +969,8 @@ function scrollToResults(){
    ============================================================ */
 function updateHints(){
   const amt = parseAmount($("#amount").value);
-  const usd = amt / CUR[cur].rate;
+  const rate = (MODE==="live" && liveRate) ? liveRate : CUR[cur].rate;
+  const usd = amt / rate;
   $("#usdHint").textContent = "\u2248 $" + usd.toFixed(2);
   const corr=+$("#corridor").value/100;
   const lo=amt*(1-corr), hi=amt*(1+corr);
@@ -992,16 +998,6 @@ async function detectBackend(){
     }catch(_){}
   }
   return null;
-}
-async function syncFx(){
-  try{
-    const r=await fetch(API_BASE+"/api/fx");
-    const j=await r.json();
-    if(j && j.rates){
-      for(const code of Object.keys(CUR)) if(Number.isFinite(j.rates[code])) CUR[code].rate=j.rates[code];
-      fxSource=j.source||fxSource;
-    }
-  }catch(_){}
 }
 function updateBadge(temp){
   const b=$("#modeBadge");
@@ -1047,6 +1043,7 @@ curMenu.querySelectorAll("button").forEach(b=>{
     const code=b.dataset.cur;
     const oldUsd = parseAmount($("#amount").value)/CUR[cur].rate;
     cur = code;
+    liveRate = null;          // курс новой валюты придёт со следующим поиском
     $("#curBtnSym").textContent = CUR[cur].sym;
     $("#curBtnName").textContent = CUR[cur].name;
     $("#amtCur").textContent = CUR[cur].sym;
@@ -1070,7 +1067,7 @@ render(demoCompute(), true);
   updateBadge("проверяю бэкенд…");
   const health = await detectBackend();
   if(health){
-    MODE="live"; await syncFx(); updateBadge(); updateHints();
+    MODE="live"; updateBadge(); updateHints();
     await refresh(false);
   } else {
     MODE="demo"; updateBadge();
