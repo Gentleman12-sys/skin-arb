@@ -660,6 +660,10 @@ function keepMax(map, name, price) {
   const prev = map.get(name);
   if (prev == null || price > prev) map.set(name, price);
 }
+function keepMin(map, name, price) {
+  const prev = map.get(name);
+  if (prev == null || price < prev) map.set(name, price);
+}
 
 async function loadPriceFileOrUrl(file, url, headers) {
   if (file) {
@@ -705,7 +709,7 @@ async function loadBulkStreaming(url, headers) {
     if (!item || typeof item !== 'object') return;
     const name = normName(pickField(item, NAME_FIELDS));
     const price = parseMoney(pickField(item, PRICE_FIELDS));
-    if (name && price != null && price > 0) keepMax(map, name, price);
+    if (name && price != null && price > 0) keepMin(map, name, price);
   });
 
   const mb = (result.bytesReceived / (1024 * 1024)).toFixed(1);
