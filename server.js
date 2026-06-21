@@ -75,6 +75,9 @@ const CFG = {
   steamDelayMs:     int(process.env.STEAM_DELAY_MS, 3500),     // ~17 запросов/мин
   steamMaxLookups:  int(process.env.STEAM_MAX_LOOKUPS, 40),   // потолок «свежих» запросов
   steamRetries:     int(process.env.STEAM_RETRIES, 3),
+  // Если lowest_price < median × этого порога — считаем lowest выбросом и
+  // берём медиану (защита от фейкового спреда из-за протухшего дешёвого лота).
+  steamOutlierRatio: float(process.env.STEAM_OUTLIER_RATIO, 0.5),
 
   // Комиссия Steam при продаже (для режима «чистыми»).
   steamFee: float(process.env.STEAM_FEE, 0.15),
@@ -621,6 +624,16 @@ function enqueueSteam(fn) {
 // Ключ кэша Steam учитывает валюту: цены в регионах независимы.
 function steamKey(mhn, code) { return 'steam:' + code + ':' + mhn; }
 
+// Выбор цены Steam. lowest_price (самый дешёвый лот) иногда аномально низкий —
+// одиночный протухший/неадекватный лот или скин другого качества под тем же
+// market_hash_name. Если lowest сильно ниже медианы продаж — берём медиану как
+// реалистичную цену, чтобы не показывать фейковый спред в тысячи процентов.
+function pickSteamPrice(low, med) {
+  if (low == null) return med != null ? med : null;
+  if (med == null) return low;
+  return low < med * CFG.steamOutlierRatio ? med : low;
+}
+
 async function getSteamPrice(mhn, code = 1) {
   const key = steamKey(mhn, code);
   const cached = cacheGet(key, CFG.steamTtl);
@@ -634,11 +647,12 @@ async function getSteamPrice(mhn, code = 1) {
           + '&market_hash_name=' + encodeURIComponent(mhn);
         const data = await httpGetJson(url, { retries: 0, timeout: CFG.httpTimeout });
         if (!data || data.success !== true) return { price: null };
-        const raw = data.lowest_price || data.median_price || null;
-        return { price: parseMoney(raw) };
+        const low = parseMoney(data.lowest_price);
+        const med = parseMoney(data.median_price);
+        return { price: pickSteamPrice(low, med), low, med };
       });
-      const result = { price: out.price, source: 'steam' };
-      cacheSet(key, { price: out.price });
+      const result = { price: out.price, low: out.low, med: out.med, source: 'steam' };
+      cacheSet(key, { price: out.price, low: out.low, med: out.med });
       return result;
     } catch (e) {
       if (e.statusCode === 429 && attempt < CFG.steamRetries) {
@@ -1104,7 +1118,7 @@ async function handleApi(pathname, q, res) {
     if (!name) return sendJson(res, 400, { ok: false, error: 'name required' });
     const currency = String(q.get('currency') || 'USD').toUpperCase();
     const sp = await getSteamPrice(name, steamCurrencyCode(currency));
-    return sendJson(res, 200, { ok: true, name, currency, price: sp.price, source: sp.source, error: sp.error });
+    return sendJson(res, 200, { ok: true, name, currency, price: sp.price, lowest: sp.low, median: sp.med, source: sp.source, error: sp.error });
   }
   if (pathname === '/api/prices') {
     const sample = [...lisState.map].slice(0, int(q.get('limit'), 50));
@@ -1284,7 +1298,9 @@ async function cliSteam(args) {
   if (!name) { console.error('Укажи имя: node server.js steam "AK-47 | Asiimov (Field-Tested)"'); process.exit(1); }
   const currency = (args.currency || 'USD').toUpperCase();
   const sp = await getSteamPrice(name, steamCurrencyCode(currency));
-  console.log(`${name}: ${sp.price == null ? 'нет цены' : sp.price + ' ' + currency} (${sp.source})${sp.error ? ' — ' + sp.error : ''}`);
+  const extra = (sp.low != null || sp.med != null)
+    ? ` [lowest=${sp.low ?? '—'} · median=${sp.med ?? '—'}]` : '';
+  console.log(`${name}: ${sp.price == null ? 'нет цены' : sp.price + ' ' + currency} (${sp.source})${extra}${sp.error ? ' — ' + sp.error : ''}`);
 }
 
 async function cliDiag() {

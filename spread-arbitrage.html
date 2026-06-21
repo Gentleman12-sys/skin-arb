@@ -655,7 +655,7 @@ footer{border-top:1px solid var(--line);padding:50px 0 30px}
       <div class="step"><div class="n">03</div><h3>Спред и курс</h3><p>LIS работает в USD — переводим в валюту по курсу из самого Steam (эталонный скин, с кэшем). Спред = выплата LIS − цена Steam, всё в валюте показа.</p></div>
     </div>
     <div class="markets" id="markets">
-      <div class="mk steam"><div class="h"><span class="d"></span> Steam Community Market</div><p>Публичный витринный рынок Valve. Берём минимальную цену лота (при отсутствии — медианную) сразу в валюте поиска (currency=код) — цены в регионах Steam независимы. Жёсткий лимит запросов, поэтому проверяем точечно.</p></div>
+      <div class="mk steam"><div class="h"><span class="d"></span> Steam Community Market</div><p>Публичный витринный рынок Valve. Берём минимальную цену лота (а если она аномально ниже медианы продаж — медиану, чтобы отсечь протухший дешёвый лот) сразу в валюте поиска (currency=код) — цены в регионах Steam независимы. Жёсткий лимит запросов, поэтому проверяем точечно.</p></div>
       <div class="mk lis"><div class="h"><span class="d"></span> LIS-Skins</div><p>Площадка скупки скинов: платит за предмет фиксированную сумму в долларах. Прайс выгружается один раз, кэшируется в памяти и обновляется в фоне.</p></div>
     </div>
   </div>
